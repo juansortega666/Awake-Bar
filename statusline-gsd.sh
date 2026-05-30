@@ -152,6 +152,67 @@ fi
 fm()     { grep -m1 -E "^$1:"   "$state" | sed -E "s/^$1:[[:space:]]*//;   s/[[:space:]]*\$//; s/^\"//; s/\"\$//"; }
 fmnest() { grep -m1 -E "^  $1:" "$state" | sed -E "s/^  $1:[[:space:]]*//; s/[[:space:]]*\$//"; }
 
+# ---- STATE.md alert helpers (D-09..D-12) ----
+# Echo the lines under "### <h>" up to (but not including) the next ##/### heading.
+fmsection() {
+  local h="$1" s="$2"
+  awk -v h="### $h" '
+    $0 == h        { inside=1; next }
+    inside && /^##/{ exit }
+    inside         { print }
+  ' "$s" 2>/dev/null
+}
+
+# Count non-empty bullet lines ("- ..." or "* ...") under "### <h>".
+# "None." and blank lines do NOT count. (D-12)
+count_alert_bullets() {
+  fmsection "$1" "$2" | grep -cE '^[[:space:]]*[-*][[:space:]]+' 2>/dev/null
+}
+
+# Sum the explicit integers before "pending" in the Deferred Items section. (D-10)
+# Accepts both "### Deferred Items" and "## Deferred Items".
+count_deferred_pending() {
+  local s="$1"
+  awk '
+    /^##+[[:space:]]+Deferred Items/ { inside=1; next }
+    inside && /^##/                  { exit }
+    inside {
+      # find every "<int> pending" occurrence on this line
+      while (match($0, /[0-9]+[[:space:]]+pending/)) {
+        n = substr($0, RSTART, RLENGTH)
+        sub(/[[:space:]]+pending/, "", n)
+        sum += n + 0
+        $0 = substr($0, RSTART + RLENGTH)
+      }
+    }
+    END { print sum + 0 }
+  ' "$s" 2>/dev/null
+}
+
+# Public entrypoint. Echoes "<todo> <uat> <blocker>" with mtime cache (D-11).
+# Safe on missing/malformed state — silently returns "0 0 0".
+parse_alerts() {
+  local s="$1"
+  local cache="/tmp/gsd-alerts-${session_id}"
+  if [ -z "$s" ] || [ ! -f "$s" ]; then
+    printf '0 0 0\n'; return 0
+  fi
+  local smtime cmtime
+  smtime="$(stat -f %m "$s" 2>/dev/null || stat -c %Y "$s" 2>/dev/null)"
+  if [ -f "$cache" ]; then
+    cmtime="$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null)"
+    if [ -n "$smtime" ] && [ -n "$cmtime" ] && [ "$cmtime" -ge "$smtime" ]; then
+      cat "$cache" 2>/dev/null && return 0
+    fi
+  fi
+  local todo uat blocker
+  todo="$(count_alert_bullets "TODOs" "$s")"
+  blocker="$(count_alert_bullets "Blockers" "$s")"
+  uat="$(count_deferred_pending "$s")"
+  todo="${todo:-0}"; uat="${uat:-0}"; blocker="${blocker:-0}"
+  printf '%s %s %s\n' "$todo" "$uat" "$blocker" | tee "$cache" 2>/dev/null
+}
+
 milestone="$(fm milestone)"
 status="$(fm status)"
 percent="$(fmnest percent)"
