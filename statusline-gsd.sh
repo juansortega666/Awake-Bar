@@ -427,13 +427,39 @@ counter=""
 # it is double-line, bold, lighter gray.
 if [ -z "$nextstep" ]; then
   case "$step" in
-    Define)   nextstep="Roadmap" ;;
-    Roadmap)  nextstep="Plan"    ;;
-    Discuss)  nextstep="Plan"    ;;
-    Plan)     nextstep="Execute" ;;
-    Execute)  nextstep="Verify"  ;;
-    Verify)   nextstep="Ship"    ;;
-    *)        nextstep=""          ;;
+    # --- Pre-phase chain ---
+    Roadmap)           nextstep="Discuss" ;;
+    Spec)              nextstep="Discuss" ;;
+    UIPhase)           nextstep="Discuss" ;;
+    Discuss)           nextstep="Plan"    ;;
+    Research)          nextstep="Plan"    ;;
+    # --- Impl ---
+    Plan)              nextstep="Execute" ;;
+    Execute)           nextstep="Verify"  ;;
+    # --- Verify family: all 6 flavors map to Ship (terminal of milestone) ---
+    # Per gsd-flow SKILL §3: Verify-family sub-stages share Verify's next-arrow.
+    # We keep "Ship" (the existing default) as the conservative pick; Phase 4
+    # may refine when adaptive composition lands.
+    Verify)            nextstep="Ship"    ;;
+    CodeReview)        nextstep="Ship"    ;;
+    UIReview)          nextstep="Ship"    ;;
+    EvalReview)        nextstep="Ship"    ;;
+    Validate)          nextstep="Ship"    ;;
+    Secure)            nextstep="Ship"    ;;
+    # --- Meta-end: terminal stages have no Next: ---
+    CompleteMilestone) nextstep=""        ;;
+    Ship)              nextstep=""        ;;
+    # --- Side channels: don't advance the milestone (gsd-flow SKILL §3) ---
+    Quick)             nextstep=""        ;;
+    Fast)              nextstep=""        ;;
+    Debug)             nextstep=""        ;;
+    # --- Legacy idle states (kept for backward-compat with the past-participle
+    # case block at lines 317-339 which sets step="Define" via the "requirement"
+    # pattern; D-23 forbids modifying that block, so we must still handle Define
+    # here for the legacy code path) ---
+    Define)            nextstep="Roadmap" ;;
+    # --- Unknown / empty ---
+    *)                 nextstep=""        ;;
   esac
 fi
 nextseg=""
