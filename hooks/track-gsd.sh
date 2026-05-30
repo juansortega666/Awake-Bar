@@ -38,5 +38,5 @@ esac
 args="$(printf '%s' "$input" | jq -r '.command_args // ""' 2>/dev/null)"
 phase="$(printf '%s' "$args" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)"
 
-[ -n "$stage" ] && printf '%s %s %s\n' "$(date +%s)" "$stage" "$phase" > "/tmp/gsd-cmd-${sid}" 2>/dev/null
+[ -n "$stage" ] && printf '%s %s %s %s\n' "$(date +%s)" "$stage" "$phase" "-" > "/tmp/gsd-cmd-${sid}" 2>/dev/null
 exit 0
