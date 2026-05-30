@@ -252,7 +252,7 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 #                             trusted up to 10s (it refreshes constantly while live).
 #                             Also carries "<cur> <tot>" sub-step counts.
 # (session_id + now_epoch are computed once at the top, before the powerline cache.)
-livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep=""
+livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep=""; livecmdslug=""
 
 # Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (10s fresh).
 # <stage> is the fallback live stage; <cur>/<tot> drive the dynamic sub-step counter
@@ -272,10 +272,13 @@ fi
 # carries the phase arg — then fall back to the subagent live stage (10s).
 cf="/tmp/gsd-cmd-${session_id}"
 if [ -f "$cf" ]; then
-  cts=""; cst=""; cph=""
-  read -r cts cst cph < "$cf" 2>/dev/null || true
+  cts=""; cst=""; cph=""; csl=""
+  read -r cts cst cph csl < "$cf" 2>/dev/null || true
   if [ -n "$cts" ] && [ "${cts//[^0-9]/}" = "$cts" ] && [ -n "$cst" ] && [ "$(( now_epoch - cts ))" -le 1800 ]; then
     livestage="$cst"; livephase="$cph"
+    # slug from the hook is "-" until subagent-statusline.sh promotes a real value (D-14).
+    # Captured here for Phase 3 (QUICK-01) which will render "<glyph> Quick: <slug>".
+    [ "$csl" != "-" ] && livecmdslug="$csl"
   fi
 fi
 [ -z "$livestage" ] && [ "$live_fresh" -eq 1 ] && [ -n "$live_stage_f" ] && livestage="$live_stage_f"
