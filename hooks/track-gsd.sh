@@ -2,8 +2,9 @@
 # UserPromptExpansion hook. When a /gsd-<verb> slash command is invoked, record the
 # live GSD stage so statusline-gsd.sh can show + blink it during INLINE execution
 # (STATE.md only updates after the command finishes, so it lags mid-command).
-# Side-effect only: writes "<epoch> <Stage>" to /tmp/gsd-cmd-<session_id>. The Stop
-# hook clears it at turn end. Always exits 0 so it never blocks/alters the prompt.
+# Side-effect only: writes "<epoch> <Token> <phase> <slug>" to /tmp/gsd-cmd-<session_id>.
+# slug defaults to `-`; subagent-statusline.sh promotes the real slug for Quick/Fast.
+# The Stop hook clears it at turn end. Always exits 0 so it never blocks/alters the prompt.
 set -uo pipefail
 
 input="$(cat)"
@@ -12,11 +13,24 @@ cmd="$(printf '%s' "$input" | jq -r '.command_name // ""' 2>/dev/null | tr '[:up
 
 stage=""
 case "$cmd" in
-  *execut*)                                stage="Execute" ;;
-  *verif*|*review*)                        stage="Verify"  ;;
-  *discuss*|*spec*)                        stage="Discuss" ;;
-  *roadmap*|*new-milestone*|*new-project*) stage="Roadmap" ;;
-  *plan*)                                  stage="Plan"    ;;
+  *code-review*)                                    stage="CodeReview"        ;;
+  *ui-review*)                                      stage="UIReview"          ;;
+  *eval-review*)                                    stage="EvalReview"        ;;
+  *validate*)                                       stage="Validate"          ;;
+  *secure*)                                         stage="Secure"            ;;
+  *verif*)                                          stage="Verify"            ;;
+  *ui-phase*)                                       stage="UIPhase"           ;;
+  *discuss*)                                        stage="Discuss"           ;;
+  *plan*)                                           stage="Plan"              ;;
+  *execut*)                                         stage="Execute"           ;;
+  *research*)                                       stage="Research"          ;;
+  *spec*)                                           stage="Spec"              ;;
+  *quick*)                                          stage="Quick"             ;;
+  *fast*)                                           stage="Fast"              ;;
+  *debug*)                                          stage="Debug"             ;;
+  *complete-milestone*)                             stage="CompleteMilestone" ;;
+  *ship*)                                           stage="Ship"              ;;
+  *roadmap*|*new-milestone*|*new-project*)          stage="Roadmap"           ;;
 esac
 
 # Phase number from the command args (e.g. /gsd-discuss-phase 20 → "20"), so the
