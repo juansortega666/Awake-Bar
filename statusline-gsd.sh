@@ -353,12 +353,34 @@ fi
 if [ -n "$livestage" ]; then
   step="$livestage"; nextstep=""
   case "$step" in
-    Discuss) glyph="◔"; livelabel="Discussing"  ;;
-    Plan)    glyph="◑"; livelabel="Planning"    ;;
-    Execute) glyph="▸"; livelabel="Executing"   ;;
-    Verify)  glyph="✓"; livelabel="Verifying"   ;;
-    Roadmap) glyph="◇"; livelabel="Roadmapping" ;;
-    *)       livelabel="$step" ;;
+    # --- Meta-start (D-01) ---
+    Roadmap)           glyph="◇"; livelabel="Roadmapping"        ;;
+    # --- Pre-phase (D-02..D-05) ---
+    Spec)              glyph="◔"; livelabel="Specifying"         ;;
+    UIPhase)           glyph="◔"; livelabel="UI design"          ;;
+    Discuss)           glyph="◔"; livelabel="Discussing"         ;;
+    Research)          glyph="◎"; livelabel="Researching"        ;;
+    # --- Impl (D-06, D-07) ---
+    Plan)              glyph="◑"; livelabel="Planning"           ;;
+    Execute)           glyph="▸"; livelabel="Executing"          ;;
+    # --- Verify family — glyph ✓ LOCKED by STAGE-01 + D-19 (D-08..D-13) ---
+    Verify)            glyph="✓"; livelabel="Verifying"          ;;
+    CodeReview)        glyph="✓"; livelabel="Code-reviewing"     ;;
+    UIReview)          glyph="✓"; livelabel="UI-reviewing"       ;;
+    EvalReview)        glyph="✓"; livelabel="Eval-reviewing"     ;;
+    Validate)          glyph="✓"; livelabel="Validating"         ;;
+    Secure)            glyph="✓"; livelabel="Securing"           ;;
+    # --- Meta-end (D-14, D-15) ---
+    CompleteMilestone) glyph="↗"; livelabel="Closing milestone"  ;;
+    Ship)              glyph="↗"; livelabel="Shipping"           ;;
+    # --- Side channels (D-16, D-17, D-18) ---
+    # Quick/Fast labels stay as nouns per PROJECT.md Key Decisions row 5;
+    # Phase 3 (QUICK-01) will render "<glyph> Quick: <slug>" using $livecmdslug.
+    Quick)             glyph="⚡"; livelabel="Quick"              ;;
+    Fast)              glyph="»"; livelabel="Fast"               ;;
+    Debug)             glyph="◍"; livelabel="Debugging"          ;;
+    # --- Unknown non-empty token (D-22): render raw verbatim with neutral glyph ---
+    *)                 glyph="·"; livelabel="$step"              ;;
   esac
   # Spinner: while live, the stage glyph rotates through 4 quadrant frames, one per
   # render — a "working now" signal. It advances only when the script re-runs, so it
