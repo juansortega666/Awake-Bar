@@ -78,3 +78,44 @@ case "$running" in
   *plan*)           livestage="Plan"    ;;
 esac
 printf '%s %s %s %s\n' "$(date +%s)" "$livestage" "$sub_cur" "$sub_tot" > "/tmp/gsd-live-${session_id}" 2>/dev/null || true
+
+# ---- Slug promotion for Quick/Fast (D-14, D-15) ----
+# The hook (track-gsd.sh) writes `/tmp/gsd-cmd-<sid>` with slug=`-` because it
+# fires on UserPromptExpansion, before the Quick/Fast subagent's label exists.
+# When a Quick:/Fast: subagent IS running, its label carries the real slug —
+# promote it into the cmd file's 4th positional field so the bar can render
+# "⚡ Quick: <slug>" in Phase 3 (QUICK-01).
+#
+# In-place rewrite preserves the 4-positional schema (`<epoch> <token> <phase> <slug>`).
+# Idempotent: skip if cmd file is absent (no GSD command active), if no Quick/Fast
+# label is running, or if the slug was already promoted.
+cf="/tmp/gsd-cmd-${session_id}"
+if [ -f "$cf" ]; then
+  # Pull the running tasks' raw labels (NOT lowercased — slug case matters).
+  qf_label="$(printf '%s' "$input" | jq -r '
+    [.tasks[]?
+      | select(.status == "running")
+      | (.label // .description // "")
+      | select(test("^(Quick|Fast): "))
+    ] | first // ""
+  ' 2>/dev/null)"
+
+  if [ -n "$qf_label" ]; then
+    # Extract everything after the "Quick: " or "Fast: " prefix.
+    new_slug="$(printf '%s' "$qf_label" | sed -E 's/^(Quick|Fast):[[:space:]]+//' | tr -s '[:space:]' '-' | sed -E 's/^-+//; s/-+$//')"
+    if [ -n "$new_slug" ]; then
+      # Read the current 4-positional line; only rewrite if slug field is `-`.
+      cts=""; cst=""; cph=""; csl=""
+      read -r cts cst cph csl < "$cf" 2>/dev/null || true
+      # Guards: token must be Quick or Fast (we don't overwrite Execute/Verify/... slugs);
+      # slug must currently be `-` or empty (idempotency / don't re-write same value).
+      case "$cst" in
+        Quick|Fast)
+          if [ "$csl" = "-" ] || [ -z "$csl" ]; then
+            printf '%s %s %s %s\n' "$cts" "$cst" "$cph" "$new_slug" > "$cf" 2>/dev/null || true
+          fi
+          ;;
+      esac
+    fi
+  fi
+fi
