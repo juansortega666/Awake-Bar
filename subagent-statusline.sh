@@ -119,3 +119,29 @@ if [ -f "$cf" ]; then
     fi
   fi
 fi
+
+# ---- Wave promotion for Execute (Phase 4 D-16, D-17) ----
+# The /gsd-execute-phase orchestrator labels executor subagents with a `Wave N/M:`
+# prefix (e.g. label "Wave 1/3: Execute plan 01-02 of phase 1"). Parse that prefix
+# from the FIRST running task whose label starts with `Wave \d+/\d+:` and write it
+# to /tmp/gsd-wave-<sid> as `<epoch> <wave_cur> <wave_tot>` (10s TTL pattern, mirrors
+# /tmp/gsd-live-<sid>). statusline-gsd.sh reads this only when livestage=Execute
+# (cascade builder, Task 1). Absent file or stale (>10s) = no W segment renders.
+#
+# Schema choice: parallel file (NOT extending the 4-positional /tmp/gsd-cmd schema).
+# Rationale: preserves Phase 1 contract, mirrors /tmp/gsd-live pattern, simple cleanup.
+wave_label="$(printf '%s' "$input" | jq -r '
+  [.tasks[]?
+    | select(.status == "running")
+    | (.label // .description // "")
+    | select(test("^Wave [0-9]+/[0-9]+:"))
+  ] | first // ""
+' 2>/dev/null)"
+
+if [ -n "$wave_label" ]; then
+  wave_cur="$(printf '%s' "$wave_label" | sed -nE 's/^Wave ([0-9]+)\/([0-9]+):.*/\1/p')"
+  wave_tot="$(printf '%s' "$wave_label" | sed -nE 's/^Wave ([0-9]+)\/([0-9]+):.*/\2/p')"
+  if [ -n "$wave_cur" ] && [ -n "$wave_tot" ] && [ "$wave_tot" -gt 0 ] 2>/dev/null; then
+    printf '%s %s %s\n' "$(date +%s)" "$wave_cur" "$wave_tot" > "/tmp/gsd-wave-${session_id}" 2>/dev/null || true
+  fi
+fi
