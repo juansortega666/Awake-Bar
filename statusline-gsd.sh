@@ -218,6 +218,8 @@ status="$(fm status)"
 percent="$(fmnest percent)"
 cdone="$(fmnest completed_phases)"
 ctot="$(fmnest total_phases)"
+ptot="$(fmnest total_plans)"
+ptot="${ptot//[^0-9]/}"; [ -z "$ptot" ] && ptot=0
 
 phaseline="$(grep -m1 -E '^Phase:' "$state")"
 planline="$(grep -m1 -E '^Plan:'  "$state")"
@@ -253,6 +255,11 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 #                             Also carries "<cur> <tot>" sub-step counts.
 # (session_id + now_epoch are computed once at the top, before the powerline cache.)
 livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep=""; livecmdslug=""
+
+# Defensive top-level init — these are populated later but MAY be referenced
+# by the finished-check (D-15 enhanced) before population. set -uo pipefail safety.
+todo=0; uat=0; blocker=0
+acol=""; aparts=""
 
 # Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (10s fresh).
 # <stage> is the fallback live stage; <cur>/<tot> drive the dynamic sub-step counter
@@ -408,19 +415,51 @@ fi
 
 pc="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+([0-9]+).*/\1\/\2/p')"
 pseg=""; [ -n "$pc" ] && pseg=" ${pc}"
-pnum=""; [ -n "$phasenum" ] && pnum="P${phasenum} "
+prun="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+[0-9]+.*/\1/p')"
+prun="${prun//[^0-9]/}"
+
+# Plan-within-phase counter per PLAN-01 (D-01..D-03):
+#   D-01: with active plan       → "P27.2/4 · M3/8"
+#   D-02: no plan running        → "P27/4 · M3/8"   (drop .<plan>)
+#   D-03: decimal phase (72.1)   → "P72.1/4 · M3/8" (drop .<plan> — phase is already nested)
+phaseplanseg=""
+if [ -n "$phasenum" ]; then
+  # Detect decimal phase per D-03
+  if [[ "$phasenum" == *.* ]]; then
+    pcore="P${phasenum}"
+  elif [ -n "$prun" ] && [ "$prun" -gt 0 ] 2>/dev/null; then
+    pcore="P${phasenum}.${prun}"
+  else
+    pcore="P${phasenum}"
+  fi
+  # Append /<total-plans> when total_plans is known and >0
+  if [ "$ptot" -gt 0 ] 2>/dev/null; then
+    pcore="${pcore}/${ptot}"
+  fi
+  # Append milestone counter M<done>/<total>
+  if [ "$ctot" -gt 0 ] 2>/dev/null; then
+    phaseplanseg="${pcore} ${DG}·${R} ${LG}M${cdone}/${ctot}${R}"
+  else
+    phaseplanseg="${pcore}"
+  fi
+fi
+# NOTE: the legacy `pnum=""; [ -n "$phasenum" ] && pnum="P${phasenum} "` line
+# is DELETED outright — the new now= rewrite below no longer references $pnum.
 
 # Detected stage, or fall back to the raw status text so it's never blank. While a
 # GSD command is live, show the gerund label (set above) in steady LIVE green.
 stage="${livelabel:-$step}"
 [ -z "$stage" ] && stage="$(printf '%s' "$status" | cut -c1-24)"
 [ -z "$stage" ] && stage="working"
-now="${pnum}${glyph} ${livecol}${stage}${livecoloff}${substep}${pseg}"
+# D-05: counter sits INSIDE Now: immediately after the stage label.
+# Legacy pseg (sub-step "/<x>" from planline) is REMOVED — the new phaseplanseg covers it.
+# Legacy pnum prefix is GONE — the counter no longer sits before the glyph.
+now="${glyph} ${livecol}${stage}${livecoloff}${substep}"
+[ -n "$phaseplanseg" ] && now="${now} ${LG}${phaseplanseg}${R}"
 
-# Step numbers: active step (done count) bold purple, total step light gray, "/"
-# structure gray. Hidden when no GSD task is active yet (no phases → ctot 0).
+# D-04: old cdone/ctot counter REMOVED — phaseplanseg above carries M<done>/<total>.
+# Keep variable defined as empty so the seg= line still references it without error.
 counter=""
-[ "$ctot" -gt 0 ] && counter=" ${B}${PUR}${cdone}${R}${DG}/${R}${LG}${ctot}${R}"
 
 # Next: upcoming GSD step — a transition state above may have set it, else derive
 # it from the current stage. Hidden when there is nothing next. The arrow (⇒) into
