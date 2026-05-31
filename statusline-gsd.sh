@@ -587,6 +587,28 @@ now="${glyph} ${livecol}${stage}${livecoloff}${substep}"
 # Keep variable defined as empty so the seg= line still references it without error.
 counter=""
 
+# Current: segment — always visible at start of GSD line (hybrid logic).
+# Active mode: reuse $glyph (animated spinner) + $stage (gerund from livelabel)
+#   + $substep ((cur/tot)). NOTE: do NOT reuse $now wholesale — $now also
+#   includes $phaseplanseg (M·Ph·W·Pl), which lives separately after Version:.
+# Idle mode: derive gerund from STATE.md $status field as a static label.
+if [ -n "$livestage" ]; then
+  currentseg="${DG}Current:${R} ${glyph} ${livecol}${stage}${livecoloff}${substep}"
+else
+  case "$status" in
+    ready_to_plan|ready_to_execute|ready) current_label="Ready"      ;;
+    planning|plan)                        current_label="Planning"   ;;
+    executing|execute)                    current_label="Executing"  ;;
+    verifying|verify)                     current_label="Verifying"  ;;
+    verified)                             current_label="Verified"   ;;
+    discussing|discuss)                   current_label="Discussing" ;;
+    milestone_complete)                   current_label="Complete"   ;;
+    milestone_ready)                      current_label="Closing"    ;;
+    *)                                    current_label="${step:-Working}" ;;
+  esac
+  currentseg="${DG}Current:${R} ${LG}${current_label}${R}"
+fi
+
 # Next: upcoming GSD step — a transition state above may have set it, else derive
 # it from the current stage. Hidden when there is nothing next. The arrow (⇒) into
 # it is double-line, bold, lighter gray.
@@ -700,7 +722,7 @@ if [ "$done" -eq 1 ]; then
     # Rare: archived + non-quick/fast live stage (e.g. /gsd-new-milestone running
     # between milestones BEFORE STATE.md rewrite). Fall through to full layout
     # so the user still sees the in-flight command — matches pre-Phase-3 behavior.
-    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${currentseg} ${DG}·${R} ${DG}Version:${R} ${LG}${milestone_display}${R}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   elif [ "$has_alerts" -eq 1 ]; then
     # D-16: archived + alerts only — render alert segment only (NO leading 4-space gap
     # since nothing precedes it). REUSE $alertseg (single source of truth for alert
@@ -717,16 +739,11 @@ else
   # Alert row (if has_alerts) is appended in both branches via $alertseg.
   if [ "$is_live" -eq 1 ]; then
     # Live command running — full layout with Now: segment
-    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${currentseg} ${DG}·${R} ${DG}Version:${R} ${LG}${milestone_display}${R}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   else
-    # D-14: active milestone idle — no Now: segment. Counter + bar + Next: + alerts only.
-    # phaseplanseg sits directly after Version: (no Now: wrapper).
-    # W5: guard $phaseplanseg interpolation to avoid double-space when empty.
-    if [ -n "$phaseplanseg" ]; then
-      seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${LG}${phaseplanseg}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-    else
-      seg="${DG}Version:${R} ${LG}${milestone_display}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-    fi
+    # Idle: ${phaseplanseg:+...} expansion handles the empty-vs-present case in
+    # one line — collapsed from the legacy if/else after Current: unified the layout.
+    seg="${currentseg} ${DG}·${R} ${DG}Version:${R} ${LG}${milestone_display}${R}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   fi
 fi
 
