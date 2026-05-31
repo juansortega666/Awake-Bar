@@ -236,6 +236,26 @@ percent="${percent//[^0-9]/}"; cdone="${cdone//[^0-9]/}"; ctot="${ctot//[^0-9]/}
 [ -z "$cdone" ] && cdone=0
 [ -z "$ctot" ] && ctot=0
 
+# ---- patch-level version display (read package.json with 4s cache, PERF-01) ----
+# $milestone (from STATE.md, e.g. "v1.8") drives planning lookups (archived check etc).
+# $milestone_display drives the "Version:" segment only. When package.json exists at
+# the project root, use its full semver (e.g. "1.7.18") so the bar shows patch level;
+# otherwise fall through to the STATE.md alias.
+milestone_display="$milestone"
+if [ -f "$dir/package.json" ]; then
+  pkgcache="/tmp/gsd-pkgver-${session_id}"
+  pkgver=""
+  if [ -f "$pkgcache" ]; then
+    pkmtime="$(stat -f %m "$pkgcache" 2>/dev/null || stat -c %Y "$pkgcache" 2>/dev/null)"
+    [ -n "$pkmtime" ] && [ "$(( now_epoch - pkmtime ))" -le 4 ] && pkgver="$(cat "$pkgcache")"
+  fi
+  if [ -z "$pkgver" ]; then
+    pkgver="$(jq -r '.version // empty' "$dir/package.json" 2>/dev/null)"
+    [ -n "$pkgver" ] && printf '%s' "$pkgver" > "$pkgcache" 2>/dev/null || true
+  fi
+  [ -n "$pkgver" ] && milestone_display="$pkgver"
+fi
+
 # ---- progress bar (8 cells) ----
 cells=8
 fill=$(( (percent * cells + 50) / 100 ))
@@ -676,7 +696,7 @@ if [ "$done" -eq 1 ]; then
     # Rare: archived + non-quick/fast live stage (e.g. /gsd-new-milestone running
     # between milestones BEFORE STATE.md rewrite). Fall through to full layout
     # so the user still sees the in-flight command — matches pre-Phase-3 behavior.
-    seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   elif [ "$has_alerts" -eq 1 ]; then
     # D-16: archived + alerts only — render alert segment only (NO leading 4-space gap
     # since nothing precedes it). REUSE $alertseg (single source of truth for alert
@@ -693,15 +713,15 @@ else
   # Alert row (if has_alerts) is appended in both branches via $alertseg.
   if [ "$is_live" -eq 1 ]; then
     # Live command running — full layout with Now: segment
-    seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   else
     # D-14: active milestone idle — no Now: segment. Counter + bar + Next: + alerts only.
     # phaseplanseg sits directly after Version: (no Now: wrapper).
     # W5: guard $phaseplanseg interpolation to avoid double-space when empty.
     if [ -n "$phaseplanseg" ]; then
-      seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${LG}${phaseplanseg}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+      seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${LG}${phaseplanseg}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
     else
-      seg="${DG}Version:${R} ${LG}${milestone}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+      seg="${DG}Version:${R} ${LG}${milestone_display}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
     fi
   fi
 fi
