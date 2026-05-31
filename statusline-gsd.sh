@@ -389,13 +389,37 @@ if [ -n "$livestage" ]; then
     # --- Unknown non-empty token (D-22): render raw verbatim with neutral glyph ---
     *)                 glyph="·"; livelabel="$step"              ;;
   esac
+  # D-06..D-09: Append ": <slug>" to Quick/Fast labels when subagent panel has
+  # promoted the slug (livecmdslug non-empty). Pre-slug state (D-08): render the
+  # bare noun unchanged ("⚡ Quick"). Same rules for Fast (D-09).
+  # D-07: truncate slug to 20 chars + "…" (single-char ellipsis, U+2026).
+  # NOTE: $livestage is the authoritative source for the active stage token here.
+  # (Line ~354 sets `step="$livestage"`, so $step == $livestage at this point — but
+  # we key off $livestage explicitly to avoid implicit dependency on the case block.)
+  if [ "$livestage" = "Quick" ] || [ "$livestage" = "Fast" ]; then
+    if [ -n "$livecmdslug" ]; then
+      slugshown="$livecmdslug"
+      if [ "${#slugshown}" -gt 20 ]; then
+        slugshown="${slugshown:0:20}…"
+      fi
+      livelabel="${livelabel}: ${slugshown}"
+    fi
+    # D-08: livecmdslug empty → livelabel stays as bare "Quick" or "Fast" (no suffix, no "(loading)").
+  fi
   # Spinner: while live, the stage glyph rotates through 4 quadrant frames, one per
   # render — a "working now" signal. It advances only when the script re-runs, so it
   # needs refreshInterval:1 (settings.json) to keep spinning while the main session sits
   # idle waiting on subagents. 4 frames → a full turn every ~4s (snappier than 10).
   # Replaces the static stage glyph for the live duration.
-  spin=(◐ ◓ ◑ ◒)
-  glyph="${spin[$(( now_epoch % ${#spin[@]} ))]}"
+  # B1: Side-channel stages (Quick / Fast) MUST keep their static ⚡ / » glyphs
+  # per ROADMAP success criteria #2 + #3 — the spinner is reserved for "real work"
+  # stages (Plan / Execute / Verify / etc.). Without this guard, the spinner block
+  # below unconditionally overrides $glyph each render and the user sees ◐ ◓ ◑ ◒
+  # instead of ⚡ / » for /gsd-quick and /gsd-fast invocations.
+  if [ "$livestage" != "Quick" ] && [ "$livestage" != "Fast" ]; then
+    spin=(◐ ◓ ◑ ◒)
+    glyph="${spin[$(( now_epoch % ${#spin[@]} ))]}"
+  fi
   # Live stage colour: steady bold green (114, the LIVE colour) — deliberately NOT a
   # blink. A 2-state colour blink can't beat a 2s cycle (refreshInterval floor is 1s),
   # which reads as sluggish; the spinner above carries the per-second motion instead.
