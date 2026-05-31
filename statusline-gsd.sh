@@ -245,6 +245,32 @@ barF=""; barE=""; i=0
 while [ "$i" -lt "$fill" ];  do barF="${barF}▓"; i=$((i + 1)); done
 while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 
+# ============================================================================
+# Phase 4 D-01..D-05: BAR MODES — formal naming of the 3 adaptive states
+# ============================================================================
+# The bar has 3 modes. They are NOT mutually exclusive: Alert is ORTHOGONAL —
+# it appends a row on top of Idle or Active.
+#
+#   Mode: Idle   — default fall-through. No live signal AND milestone active.
+#                  Renders: "Version: v1.7 · M3/8 · Ph27  <bar>  ⇒ Next: Discuss"
+#                  Entry: `$livestage` empty + `$done` -eq 0. See line ~621.
+#
+#   Mode: Active — EITHER live signal fresh: /tmp/gsd-cmd (30min TTL) OR
+#                  /tmp/gsd-live (10s TTL). A /gsd-* command is running.
+#                  Renders: "Now: <glyph> <gerund> <cascade>  <bar>  ⇒ Next:"
+#                  Entry: `$livestage` non-empty (any live token). See line ~280.
+#
+#   Mode: Alert  — ORTHOGONAL row. When parse_alerts reports any non-zero count,
+#                  "    ⚠ <severity-ordered counts>" is appended to Idle OR Active.
+#                  Base mode renders normally; Alert just adds the row.
+#                  Entry: `$has_alerts` -eq 1. See line ~549 (alertseg) + line ~571.
+#
+# Mode naming is English (D-04). No state machine / module constants — comments
+# suffice (D-05 rejected adding variables that don't remove any code).
+# Archived-milestone visibility (D-15..D-18 from Phase 3) is HANDLED separately
+# in the `if [ "$done" -eq 1 ]` branch at line ~592 — no mode applies when the
+# GSD block is hidden (D-05: when block is hidden, there is no mode).
+# ============================================================================
 # ---- live GSD signal (read BEFORE the finished-check) ----
 # STATE.md lags while a GSD command runs (it only updates after). Two live signals
 # reveal the true current stage AND, crucially, that GSD is ACTIVE even between
@@ -282,6 +308,8 @@ if [ -f "$lf" ]; then
   fi
 fi
 
+# Mode: Active — entry point. If either live signal is fresh, $livestage becomes
+# non-empty below and triggers the Now: segment + spinner + (cur/tot) counter.
 # Stage precedence: the /gsd-<verb> cmd record (track-gsd.sh, 30 min) wins — it
 # carries the phase arg — then fall back to the subagent live stage (10s).
 cf="/tmp/gsd-cmd-${session_id}"
@@ -585,6 +613,12 @@ nextseg=""
 # NOTE: $acol and $aparts were defensively initialized to "" at line ~262 (Task 1)
 # so they exist even if has_alerts is false — Task 4's D-16 branch can safely
 # reuse $alertseg without re-computing them.
+# ----- Mode: Alert (orthogonal row, D-03) -----
+# When any of $blocker / $uat / $todo is > 0, build $alertseg as
+# "    ⚠ <severity-ordered counts>" colored uniformly (red if blocker, else amber).
+# This segment is APPENDED to whatever base mode (Idle or Active) is rendered
+# below — it is NOT a separate mode that replaces them. Hence "orthogonal".
+# Empty when no alerts → contributes nothing to the seg= line.
 alertseg=""
 if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo" -gt 0 ] 2>/dev/null; then
   # D-11: severity color
@@ -653,7 +687,10 @@ if [ "$done" -eq 1 ]; then
     seg=""
   fi
 else
-  # Active milestone — D-14: no Now: when no live command (idle), full layout when live.
+  # ----- Mode: Idle vs Mode: Active dispatch (active milestone) -----
+  # D-14: when no live command, render Idle layout (no Now: segment).
+  # When live signal present, render Active layout (Now: + cascade + spinner).
+  # Alert row (if has_alerts) is appended in both branches via $alertseg.
   if [ "$is_live" -eq 1 ]; then
     # Live command running — full layout with Now: segment
     seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
