@@ -260,6 +260,9 @@ livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep="";
 # by the finished-check (D-15 enhanced) before population. set -uo pipefail safety.
 todo=0; uat=0; blocker=0
 acol=""; aparts=""
+# Phase 4 Task 1 (D-14): wave-segment vars are populated inside the cascade builder
+# but defensive init mirrors the cts/cst/cph/csl pattern for set -uo pipefail safety.
+wts=""; wcur=""; wtot=""
 
 # Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (10s fresh).
 # <stage> is the fallback live stage; <cur>/<tot> drive the dynamic sub-step counter
@@ -453,33 +456,60 @@ pseg=""; [ -n "$pc" ] && pseg=" ${pc}"
 prun="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+[0-9]+.*/\1/p')"
 prun="${prun//[^0-9]/}"
 
-# Plan-within-phase counter per PLAN-01 (D-01..D-03):
-#   D-01: with active plan       → "P27.2/4 · M3/8"
-#   D-02: no plan running        → "P27/4 · M3/8"   (drop .<plan>)
-#   D-03: decimal phase (72.1)   → "P72.1/4 · M3/8" (drop .<plan> — phase is already nested)
+# Plan-within-phase counter per PLAN-01 + Phase 4 D-14 (hierarchical cascade — OVERRIDES Phase 3 D-01):
+#   New format: "M3/8 · Ph27 · W1/3 · Pl2/4"  (Milestone > Phase > Wave > Plan, top-down address)
+#   Visibility per D-15:
+#     - M (Milestone done/total)            → ALWAYS shown when milestone is active
+#     - Ph (phase number)                   → shown for all stages EXCEPT Roadmap
+#     - W (wave cur/tot)                    → shown ONLY during Execute (from /tmp/gsd-wave-<sid>, Task 3 plumbing)
+#     - Pl (plan cur/tot from "Plan: N of M") → shown ONLY during Execute, AND only for non-decimal phases
+#   Decimal phase (e.g. 72.1): Pl is dropped even during Execute (D-15 edge note).
+#   D-18 bug fix: Pl denominator comes from $pc (parsed from "Plan: N of M"), NOT $ptot (frontmatter).
 phaseplanseg=""
-if [ -n "$phasenum" ]; then
-  # Detect decimal phase per D-03
-  if [[ "$phasenum" == *.* ]]; then
-    pcore="P${phasenum}"
-  elif [ -n "$prun" ] && [ "$prun" -gt 0 ] 2>/dev/null; then
-    pcore="P${phasenum}.${prun}"
-  else
-    pcore="P${phasenum}"
+if [ -n "$milestone" ] && [ "$milestone" != "?" ] && [ "$ctot" -gt 0 ] 2>/dev/null; then
+  cascade_parts=()
+  # M segment — always shown when milestone is active
+  cascade_parts+=( "M${cdone}/${ctot}" )
+
+  # Ph segment — shown unless stage is Roadmap (D-15: Roadmapping row is M-only)
+  if [ -n "$phasenum" ] && [ "$livestage" != "Roadmap" ]; then
+    cascade_parts+=( "Ph${phasenum}" )
   fi
-  # Append /<total-plans> when total_plans is known and >0
-  if [ "$ptot" -gt 0 ] 2>/dev/null; then
-    pcore="${pcore}/${ptot}"
+
+  # W and Pl segments — shown ONLY during Execute stage
+  if [ "$livestage" = "Execute" ]; then
+    # W segment from /tmp/gsd-wave-<sid> (Task 3 plumbing). 10s TTL like gsd-live.
+    wf="/tmp/gsd-wave-${session_id}"
+    if [ -f "$wf" ]; then
+      wts=""; wcur=""; wtot=""
+      read -r wts wcur wtot < "$wf" 2>/dev/null || true
+      if [ -n "$wts" ] && [ "${wts//[^0-9]/}" = "$wts" ] && [ "$(( now_epoch - wts ))" -le 10 ]; then
+        wcur="${wcur//[^0-9]/}"; wtot="${wtot//[^0-9]/}"
+        if [ -n "$wcur" ] && [ -n "$wtot" ] && [ "$wtot" -gt 0 ] 2>/dev/null; then
+          cascade_parts+=( "W${wcur}/${wtot}" )
+        fi
+      fi
+    fi
+    # Pl segment — D-18 fix: use $pc (from "Plan: N of M"), NOT $ptot (frontmatter).
+    # Decimal phase edge (D-15): drop Pl for decimal phases (e.g. Ph72.1).
+    if [ -n "$pc" ] && [[ "$phasenum" != *.* ]]; then
+      cascade_parts+=( "Pl${pc}" )
+    fi
   fi
-  # Append milestone counter M<done>/<total>
-  if [ "$ctot" -gt 0 ] 2>/dev/null; then
-    phaseplanseg="${pcore} ${DG}·${R} ${LG}M${cdone}/${ctot}${R}"
-  else
-    phaseplanseg="${pcore}"
-  fi
+
+  # Join with " · " (middot) using the DG separator color, with LG for the value text.
+  # Build raw text first, then wrap once at consumption point.
+  phaseplanseg=""
+  for cp in "${cascade_parts[@]}"; do
+    if [ -z "$phaseplanseg" ]; then
+      phaseplanseg="${cp}"
+    else
+      phaseplanseg="${phaseplanseg} ${DG}·${R} ${LG}${cp}"
+    fi
+  done
 fi
 # NOTE: the legacy `pnum=""; [ -n "$phasenum" ] && pnum="P${phasenum} "` line
-# is DELETED outright — the new now= rewrite below no longer references $pnum.
+# is DELETED outright — the cascade above replaces all per-segment work.
 
 # Detected stage, or fall back to the raw status text so it's never blank. While a
 # GSD command is live, show the gerund label (set above) in steady LIVE green.
