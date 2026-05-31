@@ -276,7 +276,7 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 #                  Entry: `$livestage` empty + `$done` -eq 0. See line ~621.
 #
 #   Mode: Active — EITHER live signal fresh: /tmp/gsd-cmd (30min TTL) OR
-#                  /tmp/gsd-live (10s TTL). A /gsd-* command is running.
+#                  /tmp/gsd-live (60s TTL). A /gsd-* command is running.
 #                  Renders: "Now: <glyph> <gerund> <cascade>  <bar>  ⇒ Next:"
 #                  Entry: `$livestage` non-empty (any live token). See line ~280.
 #
@@ -301,7 +301,11 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 #                             execution). Trusted up to 30 min as a safety net. Carries
 #                             the phase arg.
 #   /tmp/gsd-live-<session> — set by subagent-statusline.sh from running agents,
-#                             trusted up to 10s (it refreshes constantly while live).
+#                             trusted up to 60s. The subagentStatusLine hook fires
+#                             on subagent state changes (not continuously), so during
+#                             long executor runs the signal can age — 60s tolerates
+#                             typical event gaps; if the run exceeds 60s with no
+#                             activity, the bar falls back to Idle (correct).
 #                             Also carries "<cur> <tot>" sub-step counts.
 # (session_id + now_epoch are computed once at the top, before the powerline cache.)
 livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep=""; livecmdslug=""
@@ -314,7 +318,7 @@ acol=""; aparts=""
 # but defensive init mirrors the cts/cst/cph/csl pattern for set -uo pipefail safety.
 wts=""; wcur=""; wtot=""
 
-# Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (10s fresh).
+# Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (60s fresh).
 # <stage> is the fallback live stage; <cur>/<tot> drive the dynamic sub-step counter
 # (Option A: cur = subagents started, tot = subagents spawned this command).
 live_fresh=0; live_stage_f=""; live_cur=""; live_tot=""
@@ -322,7 +326,7 @@ lf="/tmp/gsd-live-${session_id}"
 if [ -f "$lf" ]; then
   lts=""; lst=""; lcur=""; ltot=""
   read -r lts lst lcur ltot < "$lf" 2>/dev/null || true
-  if [ -n "$lts" ] && [ "${lts//[^0-9]/}" = "$lts" ] && [ "$(( now_epoch - lts ))" -le 10 ]; then
+  if [ -n "$lts" ] && [ "${lts//[^0-9]/}" = "$lts" ] && [ "$(( now_epoch - lts ))" -le 60 ]; then
     live_fresh=1; live_stage_f="$lst"
     live_cur="${lcur//[^0-9]/}"; live_tot="${ltot//[^0-9]/}"
   fi
@@ -495,7 +499,7 @@ if [ -n "$livestage" ]; then
   # live phase number from the command args overrides the (stale) STATE.md phase
   [ -n "$livephase" ] && [ "${livephase//[^0-9.]/}" = "$livephase" ] && phasenum="$livephase"
   # Dynamic sub-step counter (Option A): "(cur/tot)" of the command's internal agents,
-  # shown only while subagents are fresh (<=10s) and at least one is in the panel.
+  # shown only while subagents are fresh (<=60s) and at least one is in the panel.
   # cur (started) bold purple; parens + "/" dark-gray structure; tot light gray.
   if [ -n "$live_tot" ] && [ "$live_fresh" -eq 1 ] && [ "$live_tot" -gt 0 ] 2>/dev/null; then
     [ -z "$live_cur" ] && live_cur=0
