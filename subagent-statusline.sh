@@ -77,7 +77,14 @@ case "$running" in
   *roadmap*)        livestage="Roadmap" ;;
   *plan*)           livestage="Plan"    ;;
 esac
-printf '%s %s %s %s\n' "$(date +%s)" "$livestage" "$sub_cur" "$sub_tot" > "/tmp/gsd-live-${session_id}" 2>/dev/null || true
+# WR-01 fix: gate the write on a non-empty livestage. Otherwise unmatched
+# subagent labels (e.g. ad-hoc Task() calls outside the /gsd-* vocabulary)
+# left the file with " · 0 0" which the consumer's default-IFS read collapses,
+# rendering a bogus "Now: · 0" in the bar. Absent file → bar treats as no
+# live signal (correct), same pattern as the wave file below.
+if [ -n "$livestage" ]; then
+  printf '%s %s %s %s\n' "$(date +%s)" "$livestage" "$sub_cur" "$sub_tot" > "/tmp/gsd-live-${session_id}" 2>/dev/null || true
+fi
 
 # ---- Slug promotion for Quick/Fast (D-14, D-15) ----
 # The hook (track-gsd.sh) writes `/tmp/gsd-cmd-<sid>` with slug=`-` because it
