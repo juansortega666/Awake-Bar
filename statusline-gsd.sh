@@ -304,6 +304,14 @@ if [ -n "$milestone" ] && [ "$milestone" != "?" ]; then
   done
 fi
 
+# D-10..D-13: Alert counter. parse_alerts is Phase 1's mtime-cached helper.
+# Called BEFORE the finished-check so Task 4's enhanced D-15 condition (archived
+# AND no quick/fast AND no alerts → hide GSD block) can read these counts.
+# Defensive top-level init at line ~261 (Task 1) already set blocker/uat/todo=0,
+# so a failed read leaves them at 0 (no set -uo pipefail trip).
+read -r todo uat blocker < <(parse_alerts "$state") || true
+todo="${todo:-0}"; uat="${uat:-0}"; blocker="${blocker:-0}"
+
 # Hide the whole GSD block once the milestone is finished — only Context
 # Management shows then (e.g. in completed or other-project tabs). EXCEPTION: a fresh
 # live signal ($livestage, detected above) means a GSD command is running RIGHT NOW
@@ -528,7 +536,39 @@ fi
 nextseg=""
 [ -n "$nextstep" ] && nextseg=" ${B}${LG}⇒${R} ${DG}Next:${R} ${LG}${nextstep}${R}"
 
-seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}"
+# D-13: zero alerts → segment hidden entirely (no placeholder).
+# D-10: severity-first order (blocker first, then uat, then todo).
+# D-11: glyph + all counts share ONE color (red if blocker>0, else amber). Single SGR set, single reset.
+# D-12: separator is middot " · ".
+# NOTE: $acol and $aparts were defensively initialized to "" at line ~262 (Task 1)
+# so they exist even if has_alerts is false — Task 4's D-16 branch can safely
+# reuse $alertseg without re-computing them.
+alertseg=""
+if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo" -gt 0 ] 2>/dev/null; then
+  # D-11: severity color
+  if [ "$blocker" -gt 0 ] 2>/dev/null; then
+    acol="$REDc"
+  else
+    acol="$YELc"
+  fi
+  # D-10: severity-first build, dropping zero counts (D-13 corollary)
+  aparts=""
+  if [ "$blocker" -gt 0 ] 2>/dev/null; then
+    aparts="${blocker} blocker"
+  fi
+  if [ "$uat" -gt 0 ] 2>/dev/null; then
+    [ -n "$aparts" ] && aparts="${aparts} · "
+    aparts="${aparts}${uat} uat"
+  fi
+  if [ "$todo" -gt 0 ] 2>/dev/null; then
+    [ -n "$aparts" ] && aparts="${aparts} · "
+    aparts="${aparts}${todo} todo"
+  fi
+  # Whole segment colored uniformly. Leading 4-space gap separates from Next:.
+  alertseg="    ${acol}⚠ ${aparts}${R}"
+fi
+
+seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
 
 # ---- emit: two titled blocks separated by zero-width-space spacer rows ----
 # Layout (title → content → gap):
