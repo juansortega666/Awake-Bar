@@ -55,6 +55,35 @@ if [ -n "$trsptot" ] && [ "$trsptot" != "0" ] && [ "$trsptot" -gt 10 ] 2>/dev/nu
   echo "$out" | grep -qE "/${trsptot}([^0-9]|$)" && fail "D-19 regression: milestone-wide /${trsptot} leaked into counter"
 fi
 
+# ---- V1 (post-Phase-4 — 2026-05-31): patch-level Version: source ----
+# When package.json exists at the project root, the bar reads .version and
+# renders it (with 4s cache) instead of the STATE.md milestone alias. When
+# absent, it falls back to STATE.md milestone. Both branches MUST be exercised.
+#
+# Branch A — package.json present (TreSur):
+trspkg="/Users/tresur/Documents/TreSure-Hope-Lite/package.json"
+[ -f "$trspkg" ] || fail "V1: TreSur package.json missing at $trspkg"
+trspkgver="$(jq -r '.version // empty' "$trspkg" 2>/dev/null)"
+[ -n "$trspkgver" ] || fail "V1: cannot read .version from TreSur package.json"
+v1sid_a="ship-gate-v1a-$$"
+rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-live-${v1sid_a}" "/tmp/gsd-wave-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}"
+printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"}}' "$v1sid_a" > "/tmp/${v1sid_a}-input.json"
+v1_out_a="$(bash "$STATUS" < "/tmp/${v1sid_a}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
+echo "$v1_out_a" | grep -qE "Version: ${trspkgver}([^0-9.]|$)" || fail "V1.A: package.json version ${trspkgver} not in Version: segment: $(printf '%s' "$v1_out_a" | head -c 300)"
+rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}" "/tmp/${v1sid_a}-input.json"
+
+# Branch B — no package.json (claude-tooling itself): bar must show STATE.md milestone (e.g. v1.0)
+selfpkg="${REPO}/package.json"
+[ -f "$selfpkg" ] && fail "V1.B precondition broken: claude-tooling sprouted a package.json — adjust test"
+selfmile="$(grep -m1 -E '^milestone:' "${REPO}/.planning/STATE.md" | sed -E 's/^milestone:[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')"
+[ -n "$selfmile" ] || fail "V1.B: cannot read milestone from claude-tooling STATE.md"
+v1sid_b="ship-gate-v1b-$$"
+rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-live-${v1sid_b}" "/tmp/gsd-wave-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v1sid_b" "$REPO" > "/tmp/${v1sid_b}-input.json"
+v1_out_b="$(bash "$STATUS" < "/tmp/${v1sid_b}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
+echo "$v1_out_b" | grep -qE "Version: ${selfmile}([^0-9.]|$)" || fail "V1.B: fallback to STATE.md milestone (${selfmile}) failed: $(printf '%s' "$v1_out_b" | head -c 300)"
+rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}" "/tmp/${v1sid_b}-input.json"
+
 # ---- W3 (checker-revision 2026-05-30): Wave-segment render path ----
 # TreSur smoke test runs in idle, so the Wave segment never renders during the
 # main D-07 check. Synthesize an Execute cmd + wave fixture and assert W<n>/<m>
