@@ -317,7 +317,10 @@ todo="${todo:-0}"; uat="${uat:-0}"; blocker="${blocker:-0}"
 # live signal ($livestage, detected above) means a GSD command is running RIGHT NOW
 # (e.g. /gsd-new-milestone between milestones, before STATE.md is rewritten) — keep the
 # bar visible and let the live override below drive the pulsing stage.
-if [ "$done" -eq 1 ] && [ -z "$livestage" ]; then
+# D-15: archived + no quick/fast + no alerts → hide entire GSD block.
+# $blocker/$uat/$todo were populated by parse_alerts (above) — Task 1 defensive
+# init ensures they exist as 0 even if parse_alerts failed (set -uo pipefail safe).
+if [ "$done" -eq 1 ] && [ -z "$livestage" ] && [ "$blocker" -eq 0 ] 2>/dev/null && [ "$uat" -eq 0 ] 2>/dev/null && [ "$todo" -eq 0 ] 2>/dev/null; then
   title "✳ Context Management"
   printf '%s' "$line1"
   printf '\n%s' "$SP"
@@ -568,7 +571,64 @@ if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo"
   alertseg="    ${acol}⚠ ${aparts}${R}"
 fi
 
-seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+# ---- Visibility state flags (D-14..D-18) ----
+# has_alerts: any alert count > 0 (D-13 inverse). $blocker/$uat/$todo were
+# populated by Task 3's parse_alerts call (which runs BEFORE the finished-check).
+has_alerts=0
+if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo" -gt 0 ] 2>/dev/null; then
+  has_alerts=1
+fi
+# is_quickfast: $livestage is Quick or Fast specifically (drives D-17/D-18)
+is_quickfast=0
+if [ "$livestage" = "Quick" ] || [ "$livestage" = "Fast" ]; then
+  is_quickfast=1
+fi
+# is_live: any live command running (drives D-14's "no Now: when idle" distinction)
+is_live=0
+[ -n "$livestage" ] && is_live=1
+
+# ---- Visibility rules D-14..D-18 ----
+# Build seg conditionally based on (done, is_live, is_quickfast, has_alerts).
+if [ "$done" -eq 1 ]; then
+  # Archived milestone — D-15 hide handled above (early exit).
+  # Remaining archived cases: D-16 (alerts only), D-17 (quick/fast only), D-18 (both).
+  if [ "$is_quickfast" -eq 1 ] && [ "$has_alerts" -eq 1 ]; then
+    # D-18: archived + quick/fast + alerts — render kind+slug AND alert counter.
+    # $alertseg already carries the leading 4-space gap + color SGR + reset — reuse it.
+    seg="${glyph} ${livecol}${stage}${livecoloff}${alertseg}"
+  elif [ "$is_quickfast" -eq 1 ]; then
+    # D-17: archived + quick/fast only — render kind+slug only
+    seg="${glyph} ${livecol}${stage}${livecoloff}"
+  elif [ "$is_live" -eq 1 ]; then
+    # Rare: archived + non-quick/fast live stage (e.g. /gsd-new-milestone running
+    # between milestones BEFORE STATE.md rewrite). Fall through to full layout
+    # so the user still sees the in-flight command — matches pre-Phase-3 behavior.
+    seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+  elif [ "$has_alerts" -eq 1 ]; then
+    # D-16: archived + alerts only — render alert segment only (NO leading 4-space gap
+    # since nothing precedes it). REUSE $alertseg (single source of truth for alert
+    # formatting per B3 fix) and strip its leading 4-space padding.
+    seg="${alertseg#    }"
+  else
+    # Defensive: should not reach here (D-15 handled above)
+    seg=""
+  fi
+else
+  # Active milestone — D-14: no Now: when no live command (idle), full layout when live.
+  if [ "$is_live" -eq 1 ]; then
+    # Live command running — full layout with Now: segment
+    seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${DG}Now:${R} ${LG}${now}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+  else
+    # D-14: active milestone idle — no Now: segment. Counter + bar + Next: + alerts only.
+    # phaseplanseg sits directly after Version: (no Now: wrapper).
+    # W5: guard $phaseplanseg interpolation to avoid double-space when empty.
+    if [ -n "$phaseplanseg" ]; then
+      seg="${DG}Version:${R} ${LG}${milestone}${R} ${DG}·${R} ${LG}${phaseplanseg}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    else
+      seg="${DG}Version:${R} ${LG}${milestone}${R}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    fi
+  fi
+fi
 
 # ---- emit: two titled blocks separated by zero-width-space spacer rows ----
 # Layout (title → content → gap):
