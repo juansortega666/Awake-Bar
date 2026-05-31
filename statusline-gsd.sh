@@ -658,11 +658,11 @@ if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo"
   fi
   if [ "$uat" -gt 0 ] 2>/dev/null; then
     [ -n "$aparts" ] && aparts="${aparts} · "
-    aparts="${aparts}${uat} uat"
+    aparts="${aparts}${uat} UAT"
   fi
   if [ "$todo" -gt 0 ] 2>/dev/null; then
     [ -n "$aparts" ] && aparts="${aparts} · "
-    aparts="${aparts}${todo} todo"
+    aparts="${aparts}${todo} ToDo"
   fi
   # Whole segment colored uniformly. Leading 4-space gap separates from Next:.
   alertseg="    ${acol}⚠ ${aparts}${R}"
