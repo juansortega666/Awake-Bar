@@ -218,6 +218,10 @@ status="$(fm status)"
 percent="$(fmnest percent)"
 cdone="$(fmnest completed_phases)"
 ctot="$(fmnest total_phases)"
+# D-18: total_plans frontmatter is NO LONGER consumed by the counter (it pulled
+# the milestone-wide total instead of plans-in-phase). The Pl segment now uses $pc
+# (parsed from STATE.md body "Plan: N of M") in the cascade builder below.
+# Variable kept defined for backward-compat / future non-counter consumers.
 ptot="$(fmnest total_plans)"
 ptot="${ptot//[^0-9]/}"; [ -z "$ptot" ] && ptot=0
 
@@ -451,6 +455,11 @@ if [ -n "$livestage" ]; then
   fi
 fi
 
+# D-19 regression target: TreSur STATE.md (phase 33 of milestone v1.7) has
+# frontmatter total_plans: 89 (milestone-wide) but body "Plan: Not started"
+# for phase 33. Pre-fix the bar showed "Ph33/89" (wrong — used $ptot).
+# Post-fix the bar shows "M32/38 · Ph33" in idle (no Pl because no plan running).
+# During Execute it would show "... · Pl<n>/<m>" with m from "Plan: N of M".
 pc="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+([0-9]+).*/\1\/\2/p')"
 pseg=""; [ -n "$pc" ] && pseg=" ${pc}"
 prun="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+[0-9]+.*/\1/p')"
