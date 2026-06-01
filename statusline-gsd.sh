@@ -342,6 +342,82 @@ if [ -n "$pkgver" ]; then
   ')"
 fi
 
+# ---- Block segment → §-format transform (QUOTA-01 + COLOR-02) ----
+# Powerline's `block` segment outputs the official Claude.ai 5-hour rate-limit
+# window utilization (sourced from Claude Code's `rate_limits` hook). Default
+# format is `◱ N% (Xh Ym)` — icon, percentage, parenthesized reset time
+# (verified against @owloops/claude-powerline source: formatPercentageWithBar
+# returns `${pct}% (${timeRemaining})` and `h()` formats time as "Xh Ym" / "Xh"
+# / "Ym" depending on minutes-remaining bucket).
+#
+# We transform this into the v1.1 spec format `§ N% used ↻ Nh` (or `↻ Nm` when
+# the reset is <60 minutes away), with the N% colored via zone_color() — same
+# 3-zone rule as the Memory gauge (CONTEXT.md C-06). The reset countdown stays
+# light gray (252) regardless of zone per C-07.
+#
+# Silent-fallback contract (ROBUST-02): when the rate_limits hook is unavailable
+# (free-tier users OR Claude.ai not authenticated), powerline omits the segment
+# entirely and our regex finds no match — the splice is a no-op and the bar
+# continues rendering Model + Memory gauge without `§ N% used ↻ Nh`.
+#
+# After this splice, line 2 contains a `§` glyph (our installed marker) which
+# the Memory-gauge splice further down ("sed /§/...") anchors on to append
+# the usage gauge. So this transform MUST run BEFORE the Memory gauge block.
+block_pct=""
+block_reset=""
+# Portable extraction via sed (BSD awk lacks match()-with-array, so we go
+# straight to sed for compatibility). Pattern: digits before %, then text
+# inside the next () — captured as "<pct>|<reset_raw>".
+block_match="$(printf '%s' "$line1" | sed -nE 's/.*[^0-9]([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
+
+if [ -n "$block_match" ]; then
+  block_pct="${block_match%%|*}"
+  block_reset_raw="${block_match#*|}"
+  # Normalize reset to either "Nh" (when contains 'h') or "Nm" (when only 'm').
+  # Floor units: drop minutes when ≥1h. Examples:
+  #   "4h 12m" → "4h"
+  #   "0h 47m" → "47m"   (sub-hour, switch to minutes)
+  #   "47m"    → "47m"
+  #   "1h"     → "1h"
+  case "$block_reset_raw" in
+    *h*)
+      # Extract leading "Nh" — drop trailing minutes and any whitespace.
+      block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+h).*/\1/p')"
+      # Edge case: "0h 47m" → reset is sub-hour, switch to minutes representation.
+      if [ "$block_reset" = "0h" ]; then
+        block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+m).*/\1/p')"
+        [ -z "$block_reset" ] && block_reset="0m"
+      fi
+      ;;
+    *m*)
+      block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+m).*/\1/p')"
+      ;;
+    *)
+      block_reset="$block_reset_raw"
+      ;;
+  esac
+
+  # Color the N% via zone_color (COLOR-02 — same thresholds as Memory gauge).
+  # The reset countdown stays in light gray (C-07 — neutral info).
+  pct_color="$(zone_color "$block_pct")"
+  blockseg="${LG}§${R} ${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
+
+  # Replace powerline's native block segment in line1. Anchor on the
+  # `<digits>% (<reset>)` substring — plus the immediately preceding glyph
+  # or whitespace — so we strip the `◱` icon along with the percentage and
+  # parens. Use awk first-match-across-multi-line (mirrors version splice
+  # pattern above — replaces text in the first matching line only).
+  line1="$(printf '%s' "$line1" | awk -v rep="$blockseg" '
+    !done && match($0, /[^A-Za-z0-9]?[^[:space:]]*[[:space:]]?[0-9]+%[[:space:]]*\([^)]+\)/) {
+      printf "%s%s%s\n", substr($0, 1, RSTART - 1), rep, substr($0, RSTART + RLENGTH)
+      done = 1
+      next
+    }
+    { print }
+  ')"
+fi
+# ---- end Block segment transform ----
+
 # claude-powerline's "minimal" style has no separator option, so splice a dark-gray
 # "-" between segments. Boundaries are marked by a TRIPLE bg-reset (\e[49m ×3); the
 # first segment and the line-end use a single \e[49m, so spaces inside a value like
@@ -550,8 +626,6 @@ fi
 # plenty of room, red = nearly full.
 ctxpct="$(printf '%s' "$input" | jq -r '.context_window.used_percentage // 0' 2>/dev/null)"
 ctxpct="${ctxpct%%.*}"; ctxpct="${ctxpct//[^0-9]/}"; [ -z "$ctxpct" ] && ctxpct=0
-ctxleft="$(printf '%s' "$input" | jq -r '.context_window.remaining_percentage // empty' 2>/dev/null)"
-ctxleft="${ctxleft%%.*}"; ctxleft="${ctxleft//[^0-9]/}"; [ -z "$ctxleft" ] && ctxleft=$(( 100 - ctxpct ))
 ccells=9
 cfill=$(( (ctxpct * ccells + 50) / 100 ))
 [ "$cfill" -gt "$ccells" ] && cfill=$ccells
@@ -586,7 +660,13 @@ numcol="$(zone_color "$ctxpct")"
 # The gauge bar visualization (▓ filled = used) was already correct — only
 # the trailing number+label change.
 ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxpct}% used${R}"
-line1="$(printf '%s' "$line1" | sed "/§/s/\$/${ctxseg}/")"
+# Anchor on `✱` (the model segment glyph — always present on line 2). Pre-v1.1
+# this splice anchored on `§` (the session segment's glyph), which worked because
+# session was always enabled. Post-v1.1, the `§` is installed by the block
+# splice above ONLY when powerline's rate_limits hook fires (Pro/Max users). For
+# non-Pro users the `§` is absent, but the Memory gauge must still render — so
+# we anchor on `✱` which is guaranteed by the model segment.
+line1="$(printf '%s' "$line1" | sed "/✱/s/\$/${ctxseg}/")"
 
 # ---- locate the GSD project root (walk up from Claude's cwd) ----
 # $cwd already resolved above (used by the version walk).
