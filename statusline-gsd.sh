@@ -114,7 +114,7 @@ fi
 # exactly once, between dir and git on line 1.
 esc=$'\033'
 if [ -n "$pkgver" ]; then
-  verseg=" ${LG}V ${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
+  verseg=" ${LG}V${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
   triple="${esc}[49m${esc}[49m${esc}[49m"
   line1="$(printf '%s' "$line1" | awk -v pat="$triple" -v rep="$verseg" '
     !done {

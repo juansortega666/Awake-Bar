@@ -73,12 +73,12 @@ rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-live-${v1sid_a}" "/tmp/gsd-wave-${v1si
 printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"}}' "$v1sid_a" > "/tmp/${v1sid_a}-input.json"
 v1_out_a="$(bash "$STATUS" < "/tmp/${v1sid_a}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
 # Must contain "V <pkgver>" (Context Management splice between dir and git):
-echo "$v1_out_a" | grep -qE "V ${trspkgver}([^0-9.]|$)" || fail "V1.A: package.json version ${trspkgver} not in Context Management V segment: $(printf '%s' "$v1_out_a" | head -c 400)"
+echo "$v1_out_a" | grep -qE "V${trspkgver}([^0-9.]|$)" || fail "V1.A: package.json version ${trspkgver} not in Context Management V segment: $(printf '%s' "$v1_out_a" | head -c 400)"
 # Must NOT contain the legacy "Version: <pkgver>" anywhere (GSD line was descoped):
 echo "$v1_out_a" | grep -qE "Version:[[:space:]]*${trspkgver}" && fail "V1.A: legacy 'Version: ${trspkgver}' label still present — should have been removed from GSD line: $(printf '%s' "$v1_out_a" | head -c 400)"
 # Must appear exactly once (regression guard for multi-line awk splice — see statusline-gsd.sh ~line 100):
-v1a_count="$(echo "$v1_out_a" | grep -cE "V ${trspkgver}([^0-9.]|$)")"
-[ "$v1a_count" = "1" ] || fail "V1.A: V ${trspkgver} appears ${v1a_count} times, expected exactly 1: $(printf '%s' "$v1_out_a" | head -c 400)"
+v1a_count="$(echo "$v1_out_a" | grep -cE "V${trspkgver}([^0-9.]|$)")"
+[ "$v1a_count" = "1" ] || fail "V1.A: V${trspkgver} appears ${v1a_count} times, expected exactly 1: $(printf '%s' "$v1_out_a" | head -c 400)"
 rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}" "/tmp/${v1sid_a}-input.json"
 
 # Branch B — no package.json, no version segment (synthetic tmpdir fixture).
@@ -111,7 +111,7 @@ rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-live-${v1sid_b}" "/tmp/gsd-wave-${v1si
 printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v1sid_b" "$v1b_fixture" > "/tmp/${v1sid_b}-input.json"
 v1_out_b="$(bash "$STATUS" < "/tmp/${v1sid_b}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
 # Must NOT contain a V <ver> version segment when package.json is absent:
-echo "$v1_out_b" | grep -qE " V [0-9v]" && fail "V1.B: V <ver> segment rendered without package.json (fallback should be off): $(printf '%s' "$v1_out_b" | head -c 400)"
+echo "$v1_out_b" | grep -qE " V[0-9v]" && fail "V1.B: V<ver> segment rendered without package.json (fallback should be off): $(printf '%s' "$v1_out_b" | head -c 400)"
 # Must NOT contain the legacy "Version: v0.9-test" label (Phase-3 fallback was descoped):
 echo "$v1_out_b" | grep -qE "Version:[[:space:]]*v0\.9-test" && fail "V1.B: legacy 'Version: v0.9-test' STATE.md fallback still active — should be off after v1.0 close: $(printf '%s' "$v1_out_b" | head -c 400)"
 rm -rf "${v1b_fixture}"
