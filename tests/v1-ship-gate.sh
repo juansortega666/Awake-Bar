@@ -72,16 +72,38 @@ v1_out_a="$(bash "$STATUS" < "/tmp/${v1sid_a}-input.json" 2>&1 | sed -E 's/\x1b\
 echo "$v1_out_a" | grep -qE "Version: ${trspkgver}([^0-9.]|$)" || fail "V1.A: package.json version ${trspkgver} not in Version: segment: $(printf '%s' "$v1_out_a" | head -c 300)"
 rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}" "/tmp/${v1sid_a}-input.json"
 
-# Branch B — no package.json (claude-tooling itself): bar must show STATE.md milestone (e.g. v1.0)
-selfpkg="${REPO}/package.json"
-[ -f "$selfpkg" ] && fail "V1.B precondition broken: claude-tooling sprouted a package.json — adjust test"
-selfmile="$(grep -m1 -E '^milestone:' "${REPO}/.planning/STATE.md" | sed -E 's/^milestone:[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')"
-[ -n "$selfmile" ] || fail "V1.B: cannot read milestone from claude-tooling STATE.md"
+# Branch B — fallback to STATE.md milestone (synthetic tmpdir fixture).
+# Why synthetic: claude-tooling itself shipped v1.0 on 2026-06-01, so its
+# milestone roadmap now lives in .planning/milestones/v1.0-ROADMAP.md.
+# The bar's archived-check (line ~362) correctly hides the GSD block when
+# an archived ROADMAP exists, which would mask the fallback behavior.
+# A controlled tmpdir fixture isolates the test from project lifecycle state.
 v1sid_b="ship-gate-v1b-$$"
+v1b_fixture="/tmp/${v1sid_b}-fixture"
+mkdir -p "${v1b_fixture}/.planning"
+cat > "${v1b_fixture}/.planning/STATE.md" <<FIXTURE
+---
+gsd_state_version: 1.0
+milestone: v0.9-test
+status: ready_to_plan
+progress:
+  total_phases: 3
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
+---
+
+# STATE: V1.B Test Fixture
+
+Phase: 1
+Plan: not started
+FIXTURE
 rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-live-${v1sid_b}" "/tmp/gsd-wave-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}"
-printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v1sid_b" "$REPO" > "/tmp/${v1sid_b}-input.json"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v1sid_b" "$v1b_fixture" > "/tmp/${v1sid_b}-input.json"
 v1_out_b="$(bash "$STATUS" < "/tmp/${v1sid_b}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
-echo "$v1_out_b" | grep -qE "Version: ${selfmile}([^0-9.]|$)" || fail "V1.B: fallback to STATE.md milestone (${selfmile}) failed: $(printf '%s' "$v1_out_b" | head -c 300)"
+echo "$v1_out_b" | grep -qE "Version: v0.9-test([^0-9.]|$)" || fail "V1.B: fallback to STATE.md milestone (v0.9-test) failed: $(printf '%s' "$v1_out_b" | head -c 300)"
+rm -rf "${v1b_fixture}"
 rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}" "/tmp/${v1sid_b}-input.json"
 
 # ---- W3 (checker-revision 2026-05-30): Wave-segment render path ----
