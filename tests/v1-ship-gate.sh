@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# v1 Ship Gate — Phase 4 D-07..D-10 + D-19.
-# Verifies the four cross-cutting locks before declaring v1 shippable.
+# v1.1 Ship Gate — Phase 4 D-07..D-10 + D-19 + Phase 5 P5.1..P5.9.
+# Verifies cross-cutting locks before declaring v1.1 shippable.
 #   D-07: Smoke test against TreSur STATE.md (no formal test suite)
 #   D-08: PERF lock — <150ms/render p99 (60 sequential renders <9s, with 1 warm-up)
 #   D-09: PALETTE lock — exact 7-color set
 #   D-10: COMPAT lock — macOS bash 3.2+
 #   D-19: TreSur regression — Pl denominator no longer pulls milestone-wide total
+#   V1.A/V1.B: Version segment in Context Management (post-v1.0 close)
 #   W3:   Wave-segment render path exercised end-to-end (synthesizes Execute cmd
 #         + wave fixture, asserts `W<cur>/<tot>` appears in cascade output)
+#   P5.1..P5.9 (v1.1 Phase 5): Git state awareness — behind/conflict/detached/
+#         no-remote/rebasing/merging text labels, state-aware branch coloring
+#         (green/ámbar/rojo bold), 20-char truncation, multi-flag order,
+#         silent-fallback contract, cache TTL.
 #
-# Output: a single line "v1.0 SHIP GATE: PASS" or "v1.0 SHIP GATE: FAIL — <reason>"
+# Output: a single line "v1.1 SHIP GATE: PASS" or "v1.1 SHIP GATE: FAIL — <reason>"
 # Exit code: 0 on PASS, 1 on FAIL.
 
 set -uo pipefail
@@ -19,7 +24,7 @@ STATUS="${REPO}/statusline-gsd.sh"
 TRESUR_STATE="/Users/tresur/Documents/TreSure-Hope-Lite/.planning/STATE.md"
 
 fail() {
-  printf 'v1.0 SHIP GATE: FAIL — %s\n' "$1"
+  printf 'v1.1 SHIP GATE: FAIL — %s\n' "$1"
   exit 1
 }
 
@@ -50,7 +55,11 @@ p5_fixture() {
 #   p5_seed_powerline "$sid" "⎇ feat/very-long-branch-name-here ●"  # truncation test
 p5_seed_powerline() {
   local sid="$1" segment="$2"
-  printf '%s %s%s\n' $'\033[38;2;135;215;135m' "$segment" $'\033[0m' > "/tmp/gsd-powerline-${sid}"
+  # Emit the segment-end signature "\e[0m\e[49m" (fg-reset + bg-reset) — Plan 02's
+  # tail-flag awk splice anchors on this 2-code pair to inject conflict/no-remote
+  # AFTER the powerline-native ● dirty marker. Without the trailing \e[49m, the
+  # splice can't find its anchor and tail flags silently drop.
+  printf '%s %s%s%s\n' $'\033[38;2;135;215;135m' "$segment" $'\033[0m' $'\033[49m' > "/tmp/gsd-powerline-${sid}"
   touch "/tmp/gsd-powerline-${sid}"  # fresh mtime → cache hit
 }
 
@@ -91,10 +100,21 @@ testsid="ship-gate-$$"
 rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}"
 printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' "$testsid" > "/tmp/${testsid}-input.json"
 out="$(bash "$STATUS" < "/tmp/${testsid}-input.json" 2>&1)"
-# Required: cascade M{n}/{m} · Ph{n} present
+# Required: cascade M{n}/{m} · Ph{n} present — UNLESS the current milestone has
+# already been archived (its ROADMAP exists at .planning/milestones/<ms>-ROADMAP.md).
+# In that case the bar correctly suppresses the cascade per statusline-gsd.sh:767
+# (`done=1` short-circuit). This is a legitimate bar state, not a regression.
+trsmilestone="$(grep -m1 -E '^milestone:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
 trscompleted="$(grep -m1 -E '^  completed_phases:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
 trstotal="$(grep -m1 -E '^  total_phases:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
-echo "$out" | grep -qE "M${trscompleted}/${trstotal}" || fail "TreSur cascade missing M${trscompleted}/${trstotal}: $(printf '%s' "$out" | head -c 300)"
+trsplanning="/Users/tresur/Documents/TreSure-Hope-Lite/.planning"
+trsarchived=0
+for _ms in "$trsmilestone" "v${trsmilestone}"; do
+  [ -f "${trsplanning}/milestones/${_ms}-ROADMAP.md" ] && trsarchived=1
+done
+if [ "$trsarchived" = "0" ]; then
+  echo "$out" | grep -qE "M${trscompleted}/${trstotal}" || fail "TreSur cascade missing M${trscompleted}/${trstotal}: $(printf '%s' "$out" | head -c 300)"
+fi
 # Required (D-19): NO milestone-wide /total_plans denominator leak
 trsptot="$(grep -m1 -E '^  total_plans:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
 # I1 (checker-revision 2026-05-30): TreSur-specific guard (total_plans=89);
@@ -184,8 +204,9 @@ p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE '↑3 ↓2' || \
   fail "P5.1: ↓2 not spliced after ↑3 (cache behind:2 + powerline ↑3): $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
-  fail "P5.1: ámbar 178 SGR not on line 1 (↓N should be colored ámbar): $(printf '%s' "$out" | head -c 400)"
+# Powerline (line 2 of bar; line 1 is the Context Management title) must carry ámbar 178 for ↓N.
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.1: ámbar 178 SGR not on powerline line (↓N should be colored ámbar): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.1b: GIT-01 — behind-only case, no ↑N anchor → Plan 02 Path B fires ----
@@ -202,13 +223,14 @@ out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE '↓2' || \
   fail "P5.1b: ↓2 not present after Path B fallback (cache behind:2 + powerline without ↑N): $(printf '%s' "$out" | head -c 400)"
 # ↓2 should appear after the branch token, before (or at) the dirty marker.
-stripped_p51b="$(echo "$out" | strip_ansi | head -1)"
+# Powerline is on line 2 of the bar output (line 1 is the Context Management title).
+stripped_p51b="$(echo "$out" | strip_ansi | sed -n '2p')"
 pos_dn_b="$(printf '%s' "$stripped_p51b" | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
 pos_branch_b="$(printf '%s' "$stripped_p51b" | grep -bE -o 'test-branch' | head -1 | cut -d: -f1)"
 [ -n "$pos_branch_b" ] && [ -n "$pos_dn_b" ] && [ "$pos_branch_b" -lt "$pos_dn_b" ] || \
   fail "P5.1b: ↓2 (pos $pos_dn_b) does not appear after test-branch (pos $pos_branch_b) — Path B splice anchored wrong: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
-  fail "P5.1b: ámbar 178 SGR not on line 1 for behind-only case: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.1b: ámbar 178 SGR not on powerline line for behind-only case: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.2: GIT-02 — .git/MERGE_HEAD + unmerged file → conflict text + rojo branch ----
@@ -220,9 +242,9 @@ p5_seed_powerline "$sid" "⎇ test-branch ●"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'conflict' || \
   fail "P5.2: 'conflict' text not in output (cache conflict:1 set + powerline pre-seeded): $(printf '%s' "$out" | head -c 400)"
-# Branch should turn rojo 203
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;203m' || \
-  fail "P5.2: rojo 203 SGR not on line 1 (branch should turn rojo on conflict): $(printf '%s' "$out" | head -c 400)"
+# Branch should turn rojo 203 on the powerline line (line 2 of bar output).
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;203m' || \
+  fail "P5.2: rojo 203 SGR not on powerline line (branch should turn rojo on conflict): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.3: GIT-03 — detached HEAD → "detached <sha>" replaces ⎇ branch in rojo ----
@@ -236,11 +258,11 @@ p5_seed_powerline "$sid" "⎇ test-branch"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'detached d39c2a1' || \
   fail "P5.3: 'detached d39c2a1' not in output (cache detached + powerline ⎇-token seeded): $(printf '%s' "$out" | head -c 400)"
-# ⎇ branch icon should be GONE on line 1 (replaced by 'detached <sha>').
-echo "$out" | strip_ansi | head -1 | grep -qE '⎇ ' && \
+# ⎇ branch icon should be GONE on the powerline line (line 2) — replaced by 'detached <sha>'.
+echo "$out" | strip_ansi | sed -n '2p' | grep -qE '⎇ ' && \
   fail "P5.3: ⎇-token still present after detached splice — branch-token replacement did not fire: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;203m' || \
-  fail "P5.3: rojo 203 not on line 1 (detached should render in rojo bold): $(printf '%s' "$out" | head -c 400)"
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;203m' || \
+  fail "P5.3: rojo 203 not on powerline line (detached should render in rojo bold): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.4a: GIT-04 — no-upstream + ahead>0 → 'no-remote' + ámbar branch ----
@@ -251,8 +273,8 @@ p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'no-remote' || \
   fail "P5.4a: 'no-remote' not in output (no_upstream:1 + ↑3 seeded): $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
-  fail "P5.4a: ámbar 178 not on line 1 (branch should turn ámbar on no-remote+ahead): $(printf '%s' "$out" | head -c 400)"
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.4a: ámbar 178 not on powerline line (branch should turn ámbar on no-remote+ahead): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.4b: GIT-04 negative — no-upstream + ahead=0 → no 'no-remote' (no nag) ----
@@ -273,8 +295,8 @@ p5_seed_powerline "$sid" "⎇ test-branch"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'rebasing' || \
   fail "P5.5a: 'rebasing' not in output: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
-  fail "P5.5a: ámbar 178 not on line 1 (rebasing should be ámbar bold): $(printf '%s' "$out" | head -c 400)"
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.5a: ámbar 178 not on powerline line (rebasing should be ámbar bold): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.5b: GIT-06 — MERGE_HEAD without conflict → 'merging' ----
@@ -285,8 +307,8 @@ p5_seed_powerline "$sid" "⎇ test-branch"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'merging' || \
   fail "P5.5b: 'merging' not in output: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
-  fail "P5.5b: ámbar 178 not on line 1: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.5b: ámbar 178 not on powerline line: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.6a: LAYOUT-02 — branch name >20 chars truncated with U+2026 ----
@@ -317,11 +339,15 @@ printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' >
 touch "/tmp/gsd-git-${sid}"
 # Pre-seed powerline with the long basename followed by the standard segment
 # boundary (triple \e[49m), so Plan 02 Task 1 Step 5 (dir-basename truncation)
-# has a string to truncate.
+# has a string to truncate. Format mirrors real powerline:
+#   "\e[<dir-color>m <basename> \e[0m\e[49m\e[49m\e[49m..."
+# The leading color SGR opens the segment; the dir-extraction regex starts
+# capturing after the first SGR. Followed by triple-\e[49m for the separator
+# transform to find the boundary anchor.
 printf '%s super-extra-long-project-directory-name %s%s%s%s\n' \
+  $'\033[38;2;208;208;208m' \
   $'\033[0m' \
-  $'\033[49m' $'\033[49m' $'\033[49m' \
-  $'\033[0m' > "/tmp/gsd-powerline-${sid}"
+  $'\033[49m' $'\033[49m' $'\033[49m' > "/tmp/gsd-powerline-${sid}"
 touch "/tmp/gsd-powerline-${sid}"
 out="$(p5_render "$sid" "$fix")"
 # Expect dir basename truncated to "super-extra-long-pr…" (19 + … = 20 visible total)
@@ -334,6 +360,86 @@ echo "$out" | strip_ansi | grep -qE 'super-extra-long-project-directory-name' &&
 echo "$out" | strip_ansi | grep -E 'Opus' | grep -qE 'Opus[^…]*$' || \
   echo "P5.6b: model line check skipped (no Opus in output — fixture has no JSON model field)"
 rm -rf "$fix"
+p5_cleanup "$sid"
+
+# ---- P5.7: ROBUST-01 — multiple flags accumulate in deterministic order ----
+# Worst case: ↑3 ↓2 ● conflict no-remote — all flags present, none dropped.
+# Order spec from 05-CONTEXT.md "Display rules":
+#   <branch-pos> ↑N ↓N ● conflict no-remote
+sid="ship-gate-p5-7-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:2 conflict:1 detached: no_upstream:1 rebasing:0 merging:0' '')"
+# Inject ↑3 + ● via powerline cache (Plan 02 splices ↓2 in after the ↑3)
+p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
+out="$(p5_render "$sid" "$fix")"
+stripped="$(echo "$out" | strip_ansi)"
+# Each flag must appear
+echo "$stripped" | grep -qE '↑3'        || fail "P5.7: ↑3 missing in worst-case output: $(printf '%s' "$out" | head -c 400)"
+echo "$stripped" | grep -qE '↓2'        || fail "P5.7: ↓2 missing in worst-case output: $(printf '%s' "$out" | head -c 400)"
+echo "$stripped" | grep -qE '●'          || fail "P5.7: ● dirty marker missing: $(printf '%s' "$out" | head -c 400)"
+echo "$stripped" | grep -qE 'conflict'  || fail "P5.7: 'conflict' missing in worst-case output: $(printf '%s' "$out" | head -c 400)"
+echo "$stripped" | grep -qE 'no-remote' || fail "P5.7: 'no-remote' missing in worst-case output: $(printf '%s' "$out" | head -c 400)"
+# Order check: ↑3 must precede ↓2 must precede conflict must precede no-remote.
+# Powerline is on line 2 of bar output (line 1 is Context Management title).
+pos_up="$(echo "$stripped" | sed -n '2p' | grep -bE -o '↑3' | head -1 | cut -d: -f1)"
+pos_dn="$(echo "$stripped" | sed -n '2p' | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
+pos_cf="$(echo "$stripped" | sed -n '2p' | grep -bE -o 'conflict' | head -1 | cut -d: -f1)"
+pos_nr="$(echo "$stripped" | sed -n '2p' | grep -bE -o 'no-remote' | head -1 | cut -d: -f1)"
+[ -n "$pos_up" ] && [ -n "$pos_dn" ] && [ "$pos_up" -lt "$pos_dn" ] || \
+  fail "P5.7: ↑3 (pos $pos_up) does not precede ↓2 (pos $pos_dn) — ROBUST-01 order violated: $(printf '%s' "$out" | head -c 400)"
+[ -n "$pos_dn" ] && [ -n "$pos_cf" ] && [ "$pos_dn" -lt "$pos_cf" ] || \
+  fail "P5.7: ↓2 (pos $pos_dn) does not precede 'conflict' (pos $pos_cf): $(printf '%s' "$out" | head -c 400)"
+[ -n "$pos_cf" ] && [ -n "$pos_nr" ] && [ "$pos_cf" -lt "$pos_nr" ] || \
+  fail "P5.7: 'conflict' (pos $pos_cf) does not precede 'no-remote' (pos $pos_nr): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.8a: ROBUST-02 — malformed JSON input → bar still renders, no crash ----
+sid="ship-gate-p5-8a-$$"
+p5_cleanup "$sid"
+# Send literal garbage (not JSON). Bar must not crash, must still emit titles.
+out="$(printf 'not json {' | bash "$STATUS" 2>&1)"
+rv=$?
+[ "$rv" -eq 0 ] || fail "P5.8a: bar exited non-zero ($rv) on malformed JSON: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | grep -qE '✳ Context Management' || \
+  fail "P5.8a: Context Management title missing on malformed input — bar may have crashed before render: $(printf '%s' "$out" | head -c 400)"
+# Must NOT contain raw bash error text
+echo "$out" | grep -qE 'unbound variable|syntax error|command not found' && \
+  fail "P5.8a: bar leaked bash error text on malformed input: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.8b: ROBUST-02 — permission-denied .git → bar still renders ----
+sid="ship-gate-p5-8b-$$"
+p5_cleanup "$sid"
+fix="/tmp/${sid}-fixture"
+mkdir -p "${fix}/.git"
+chmod 000 "${fix}/.git"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$sid" "$fix" > "/tmp/${sid}-input.json"
+out="$(bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1)"
+rv=$?
+chmod 755 "${fix}/.git"  # restore so we can clean up
+rm -rf "$fix"
+[ "$rv" -eq 0 ] || fail "P5.8b: bar exited non-zero ($rv) on permission-denied .git"
+echo "$out" | grep -qE 'Permission denied|cannot access' && \
+  fail "P5.8b: bar leaked 'Permission denied' text on chmod-000 .git: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.9: ROBUST-03 — cache file created with current mtime, TTL respected ----
+# After a real render in a git directory, /tmp/gsd-git-<sid> must exist and
+# its mtime must be within the last 4 seconds.
+sid="ship-gate-p5-9-$$"
+p5_cleanup "$sid"
+# Use the claude-tooling repo itself (it IS a git repo)
+fix="${REPO}"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$sid" "$fix" > "/tmp/${sid}-input.json"
+start_epoch="$(date +%s)"
+bash "$STATUS" < "/tmp/${sid}-input.json" >/dev/null 2>&1
+[ -f "/tmp/gsd-git-${sid}" ] || fail "P5.9: /tmp/gsd-git-${sid} not created on render"
+gmtime="$(stat -f %m "/tmp/gsd-git-${sid}" 2>/dev/null || stat -c %Y "/tmp/gsd-git-${sid}" 2>/dev/null)"
+age="$(( $(date +%s) - gmtime ))"
+[ "$age" -le 4 ] || fail "P5.9: cache file age ${age}s exceeds 4s TTL — ROBUST-03 violated"
+# Format sanity: must contain the 6 documented keys
+grep -qE 'behind:.*conflict:.*detached:.*no_upstream:.*rebasing:.*merging:' "/tmp/gsd-git-${sid}" || \
+  fail "P5.9: cache file format mismatch — expected 6 keys (behind/conflict/detached/no_upstream/rebasing/merging): $(cat /tmp/gsd-git-${sid})"
 p5_cleanup "$sid"
 
 # ---- W3 (checker-revision 2026-05-30): Wave-segment render path ----
@@ -406,5 +512,5 @@ rm -f "$perf_samples_file"
 # Cleanup
 rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}" "/tmp/${testsid}-input.json"
 
-printf 'v1.0 SHIP GATE: PASS\n'
+printf 'v1.1 SHIP GATE: PASS\n'
 exit 0
