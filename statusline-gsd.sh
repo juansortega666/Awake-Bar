@@ -42,6 +42,9 @@ W=$'\033[38;5;231m'    # pure white — titles only
 LG=$'\033[38;5;252m'   # light gray (closest to white) — active values
 DG=$'\033[38;5;240m'   # dark gray  (farthest from white) — structure / dotted track
 PUR=$'\033[38;5;141m'  # purple — GSD progress-bar fill + active step
+GRNc=$'\033[38;5;114m'   # green 114 — branch healthy + context-gauge zone 1
+YELc=$'\033[38;5;178m'   # ámbar 178 — branch warning + counters + zone 2
+REDc=$'\033[38;5;203m'   # rojo 203  — branch danger + zone 3
 
 # A block title: bold pure-white (label + icon), on its own line. No status feedback.
 title() { printf '%s%s%s%s\n' "$B" "$W" "$1" "$R"; }
@@ -248,6 +251,23 @@ read_git_state() {
 # Call once on every render
 read_git_state
 
+# ---- 20-char truncation helper (LAYOUT-02) ----
+# Bash 3.2-safe substring truncation with U+2026 ellipsis (3-byte UTF-8).
+# Returns the input unchanged when ≤20 chars; otherwise first 19 chars + …
+# Final string is ≤20 visible chars total INCLUDING the ellipsis
+# (i.e. 19 visible chars + 1 ellipsis glyph = 20). ANSI codes are NOT counted
+# because this helper operates on raw text BEFORE any ANSI splice.
+# Used to truncate branch names and dir basenames before they hit the bar
+# render. Model name is NEVER truncated (info-critical).
+truncate20() {
+  local s="$1"
+  if [ "${#s}" -gt 20 ]; then
+    printf '%s…' "${s:0:19}"
+  else
+    printf '%s' "$s"
+  fi
+}
+
 # ---- line 1: existing powerline, stdin forwarded untouched ----
 # The powerline call spawns node via npx — too heavy to run on every render once
 # refreshInterval:1 is enabled (it would fire ~60×/min). Cache its RAW output per
@@ -302,16 +322,95 @@ fi
 # block above.
 line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}-${R}${esc}[49m${esc}[49m${esc}[49m/g")"
 
-# Bold the active git branch. powerline renders the whole git segment in green
-# truecolor (#87d787 = 38;2;135;215;135) and that exact green appears ONLY on the git
-# segment here (directory/model/session are gray 208;208;208), so appending a bold SGR
-# after every occurrence of it bolds just the branch — and the segment's own trailing
-# reset (\e[0m) turns bold back off. This matches the GSD live stage + the subagent
-# "running" word so all green-active text shares one weight (terminal bold ≈ semibold).
-# Done here, NOT in claude-powerline.json: its custom theme reads only per-segment fg,
-# never a bold flag. Must run BEFORE the context-gauge splice below (the gauge reuses
-# green 114 = 38;5;114, a different code, so the two never collide).
-line1="$(printf '%s' "$line1" | sed "s/${esc}\[38;2;135;215;135m/&${esc}[1m/g")"
+# ---- 20-char dir-basename truncation (LAYOUT-02) ----
+# The directory is the first non-color text in line1, ending at the first
+# segment boundary (triple \e[49m). Extract it, truncate if >20 chars, splice back.
+# Run AFTER the separator transform so the boundary marker is still intact for the
+# extraction regex (the transform changes \e[49m×3 → \e[49m-\e[49m×3, but the leading
+# raw text before that triple is unchanged).
+raw_dir="$(printf '%s' "$line1" | sed -n "s/^ *\([^${esc}]*\)${esc}\[49m.*/\1/p" | head -1 | sed 's/[[:space:]]*$//')"
+if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
+  trunc_dir="$(truncate20 "$raw_dir")"
+  line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${trunc_dir}|")"
+  # ^ Use | as delimiter — paths can contain slashes
+fi
+
+# ---- State-aware branch color (COLOR-01) ----
+# Determines the branch color from the gs_* flags populated by read_git_state.
+# Priority is danger > warning > healthy. NOTE: ROBUST-01 says we do NOT drop
+# flags — all trailing flags still render — but the BRANCH itself can only be
+# one color, so we pick danger when any danger flag is set.
+#
+# Detect ahead>0 by scanning $line1 for the powerline-emitted ↑ glyph inside
+# the git segment. The pattern `↑[0-9]` is unambiguous — only the git ahead
+# counter uses ↑ followed by a digit anywhere in the bar.
+branch_ahead=0
+case "$line1" in *↑[0-9]*) branch_ahead=1 ;; esac
+
+# Color decision (PALETTE-01 only):
+#   danger  → rojo 203 bold  (gs_conflict OR gs_detached non-empty)
+#   warning → ámbar 178 bold (gs_rebasing OR gs_merging OR (gs_no_upstream AND ahead>0))
+#   healthy → green 114 bold (default — current v1.0 behavior, palette-compliant)
+branch_color="$GRNc"  # default = green 114 (already 38;5;114) — hoisted to top palette
+if [ "$gs_conflict" = "1" ] || [ -n "$gs_detached" ]; then
+  branch_color="$REDc"  # rojo 203
+elif [ "$gs_rebasing" = "1" ] || [ "$gs_merging" = "1" ]; then
+  branch_color="$YELc"  # ámbar 178
+elif [ "$gs_no_upstream" = "1" ] && [ "$branch_ahead" = "1" ]; then
+  branch_color="$YELc"  # ámbar 178
+fi
+
+# Swap powerline's native truecolor (38;2;135;215;135) for our palette color.
+# Stripping the truecolor open code and inserting our 256-color code preserves
+# the segment's trailing \e[0m reset, so existing bold splice logic still works.
+# When branch_color = $GRNc, this still replaces the truecolor open with the
+# 256-color green 114 — visually nearly identical, palette-compliant, and the
+# downstream ship-gate (expected_palette in tests/v1-ship-gate.sh) stays happy
+# because 38;2;... is not in the 7-color set anyway.
+line1="$(printf '%s' "$line1" | sed "s/${esc}\[38;2;135;215;135m/${branch_color}/g")"
+
+# Now apply bold (REPLACES the v1.0 line 148 behavior, but anchored on our PALETTE color).
+# We bold AFTER our color swap so the bold SGR follows whatever color we picked.
+# The branch segment's trailing \e[0m (powerline-emitted) resets bold + color.
+# No `/g` flag — bold only the FIRST occurrence (the branch token open). Without this,
+# if our PALETTE color appeared elsewhere (e.g. ámbar gauge cells below) we'd bold
+# those too — which we don't want.
+# IMPORTANT: $branch_color contains "\e[<N>m" — the `[` would be interpreted by sed
+# as a bracket-expression open, breaking the regex. Escape it for the pattern side.
+branch_color_re="$(printf '%s' "$branch_color" | sed 's/\[/\\[/g')"
+line1="$(printf '%s' "$line1" | sed "s/${branch_color_re}/&${esc}[1m/")"
+
+# ---- Branch-token replacement for transition states (GIT-03/05/06) ----
+# When detached/rebasing/merging fires, the branch token AND its counters are
+# replaced. The replacement text inherits the state color set above.
+# Precedence among the three replacement states (only one can fire — they are
+# mutually exclusive in real git states):
+#   detached > rebasing > merging
+# Match pattern: from "⎇ " up to (but not including) "\e[0m" or counters (↑/↓/●).
+# The powerline emits "⎇ <name>" followed by either " ↑N", " ↓N", " ●", or "\e[0m".
+# We replace the whole run.
+if [ -n "$gs_detached" ]; then
+  # Replace "⎇ <anything until \e[0m or ↑/↓/●>" with "detached <sha>"
+  line1="$(printf '%s' "$line1" | sed "s/⎇ [^${esc}↑↓●]*/detached ${gs_detached} /")"
+elif [ "$gs_rebasing" = "1" ]; then
+  line1="$(printf '%s' "$line1" | sed "s/⎇ [^${esc}↑↓●]*/rebasing /")"
+elif [ "$gs_merging" = "1" ] && [ "$gs_conflict" = "0" ]; then
+  line1="$(printf '%s' "$line1" | sed "s/⎇ [^${esc}↑↓●]*/merging /")"
+fi
+
+# ---- 20-char branch-name truncation (LAYOUT-02, normal-branch case only) ----
+# When the branch name (the token after "⎇ ") exceeds 20 chars, truncate to
+# 19 + U+2026. Skip when a transition-state replacement above is active —
+# those replacements (`detached <sha>` ≤16, `rebasing` 8, `merging` 7) are
+# already under 20.
+if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" ]; then
+  # Extract the branch name from $line1 (between "⎇ " and the next " " or symbol)
+  raw_branch="$(printf '%s' "$line1" | sed -n 's/.*⎇ \([^ ↑↓●'"$esc"']*\).*/\1/p' | head -1)"
+  if [ -n "$raw_branch" ] && [ "${#raw_branch}" -gt 20 ]; then
+    trunc_branch="$(truncate20 "$raw_branch")"
+    line1="$(printf '%s' "$line1" | sed "s/⎇ ${raw_branch}/⎇ ${trunc_branch}/")"
+  fi
+fi
 
 # ---- context-usage gauge (replaces powerline's context segment) ----
 # 9-cell gauge that fills with the context window's used_percentage. Filled cells
@@ -326,9 +425,9 @@ ccells=9
 cfill=$(( (ctxpct * ccells + 50) / 100 ))
 [ "$cfill" -gt "$ccells" ] && cfill=$ccells
 [ "$cfill" -lt 0 ] && cfill=0
-GRNc=$'\033[38;5;114m'   # green — zone 1 (healthy)
-YELc=$'\033[38;5;178m'   # amber — zone 2 (caution)
-REDc=$'\033[38;5;203m'   # red   — zone 3 (nearly full)
+# GRNc/YELc/REDc hoisted to top palette block (~line 45) so the branch-coloring
+# block at ~line 138 can reference them under `set -uo pipefail` without
+# unbound-variable crashes. Same variable names — context-gauge below uses them.
 # Filled cell = its zone colour (only the reached zones light up). Empty cell =
 # dark-gray dotted texture (░) — the inactive zones stay gray, no colour shown.
 ctxbar=""; ci=1
