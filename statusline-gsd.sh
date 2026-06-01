@@ -92,17 +92,32 @@ unset _d
 # watchdog. Returns the wrapped command's exit code, or 137 (SIGKILL) when the
 # watchdog killed it. All stderr suppressed.
 #
+# IMPORTANT (v1.1 polish — cold-start fix): the watchdog subshell MUST have its
+# stdin/stdout/stderr redirected to /dev/null. Without this, the watchdog
+# inherits the file descriptors of the calling context. When this function is
+# called inside command substitution (`bc="$(git_with_timeout git ...)"`), the
+# `$(...)` capture-pipe stays open as long as any process holds a reference to
+# it — INCLUDING the backgrounded watchdog. Result: the command substitution
+# blocks for the FULL 2s `sleep` of every watchdog, even though the wrapped git
+# command finished in milliseconds. Detaching the watchdog's fds lets `$(...)`
+# return as soon as the foreground wait completes.
+#
 # Usage: git_with_timeout git -C "$cwd" rev-list --count HEAD..@{u}
 git_with_timeout() {
   local pid watchdog result
   ( "$@" 2>/dev/null ) &
   pid=$!
-  ( sleep 2; kill -9 "$pid" 2>/dev/null ) &
+  # Detach watchdog fds — prevents $() command substitution from blocking on its stdout.
+  ( sleep 2; kill -9 "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   watchdog=$!
+  # `disown` removes the watchdog from the shell's job table, so when we kill
+  # it later bash won't print "Terminated: 15" to stderr. Disown is the bash
+  # way to fully detach a background job from job-control notifications.
+  disown "$watchdog" 2>/dev/null || true
   wait "$pid" 2>/dev/null
   result=$?
   kill "$watchdog" 2>/dev/null || true
-  wait "$watchdog" 2>/dev/null || true
+  # No `wait $watchdog` — with fds detached + disowned, no blocker, no notify.
   return "$result"
 }
 
