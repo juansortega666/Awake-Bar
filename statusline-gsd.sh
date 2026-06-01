@@ -477,17 +477,32 @@ if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" 
     fi
 
     # --- conflict + no-remote tail-splice ---
-    # tail_seg goes before the first \e[0m on the git-segment line.
-    # The git segment is on line 1 of the multi-line powerline output.
-    # awk approach: on lines containing branch_color, splice tail_seg
-    # immediately before the FIRST \e[0m. `done` guard prevents accidental
-    # splice into line 2 or 3.
+    # tail_seg goes before the git segment's CLOSING boundary — the
+    # powerline-emitted "\e[0m\e[49m" pattern that marks "end of styled
+    # segment + bg-reset". We anchor on this 2-code pair (not a bare \e[0m)
+    # because Path A's behind_seg above contains a mid-segment \e[0m when
+    # restoring branch_color after ↓N — a bare-\e[0m search would splice
+    # tail_seg BEFORE the powerline-native ● dirty marker.
+    #
+    # Powerline emits the closing as: "\e[0m\e[49m" (segment fg-reset + bg-reset).
+    # This pair appears exactly ONCE per segment, at its true end. We further
+    # gate on the line containing branch_color to avoid splicing into line 2/3.
     if [ -n "$tail_seg" ]; then
-      line1="$(printf '%s' "$line1" | awk -v marker="$branch_color" -v reset="${esc}[0m" -v tail="$tail_seg" '
+      line1="$(printf '%s' "$line1" | awk -v marker="$branch_color" -v segend="${esc}[0m${esc}[49m" -v tail="$tail_seg" '
         !done && index($0, marker) {
-          p = index($0, reset)
-          if (p > 0) {
-            printf "%s%s%s\n", substr($0, 1, p - 1), tail, substr($0, p)
+          # Powerline emits the segment close as "\e[0m\e[49m" (fg-reset + bg-reset).
+          # Anchor on this 2-code pair rather than a bare \e[0m because Path A
+          # above emits a mid-segment \e[0m when restoring branch_color after ↓N
+          # — a bare-\e[0m search would splice tail_seg BEFORE the powerline-
+          # native ● dirty marker.
+          # Strategy: find branch_color marker, then find the next "segend" AFTER it.
+          # NOTE: "close" is a reserved name in awk (close() function), so we use "segend".
+          m = index($0, marker)
+          rest = substr($0, m + length(marker))
+          c = index(rest, segend)
+          if (c > 0) {
+            abs_c = m + length(marker) + c - 1
+            printf "%s%s%s\n", substr($0, 1, abs_c - 1), tail, substr($0, abs_c)
             done = 1
             next
           }
