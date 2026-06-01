@@ -268,6 +268,33 @@ truncate20() {
   fi
 }
 
+# ---- 3-zone color helper (COLOR-02 enabler — single source of truth for thresholds) ----
+# Returns the SGR escape sequence appropriate for a 0-100 USED percentage,
+# using the canonical 3-zone thresholds locked by CONTEXT.md:
+#   0-33  → light gray  (LG, 252)         — base text color, "healthy"
+#   34-66 → ámbar       (YELc, 178)       — caution
+#   67+   → bold rojo   (B + REDc, 203)   — danger
+#
+# Both gauges (Memory + Current session) call this helper with their respective
+# USED percentages so the two metrics share identical zone semantics
+# (CONTEXT.md C-06: "Single mental model — same color = same urgency").
+#
+# Defensive on non-numeric input: empty / non-digit pct collapses to 0 → light gray.
+# bash 3.2 safe — pure parameter expansion + integer arithmetic, no associative arrays.
+zone_color() {
+  local pct="${1:-0}"
+  # Strip anything non-digit, fall back to 0 if empty.
+  pct="${pct//[^0-9]/}"
+  [ -z "$pct" ] && pct=0
+  if [ "$pct" -ge 67 ]; then
+    printf '%s%s' "$B" "$REDc"
+  elif [ "$pct" -ge 34 ]; then
+    printf '%s' "$YELc"
+  else
+    printf '%s' "$LG"
+  fi
+}
+
 # ---- line 1: existing powerline, stdin forwarded untouched ----
 # The powerline call spawns node via npx — too heavy to run on every render once
 # refreshInterval:1 is enabled (it would fire ~60×/min). Cache its RAW output per
