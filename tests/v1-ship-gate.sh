@@ -562,6 +562,44 @@ echo "$out" | grep -q 'Restante' && fail "P6.3 (runtime): 'Restante' leaked into
 [ "$(echo "$out" | grep -oE '% used' | wc -l | tr -d ' ')" -ge 2 ] || fail "P6.3 (runtime): expected '% used' at least twice (block segment + Memory gauge), got: $(echo "$out" | grep -oE '% used' | wc -l) occurrences"
 p5_cleanup "$sid"
 
+# ---- P6.4 — 2-line layout (LAYOUT-01) ----
+# claude-powerline.json: exactly 2 `display.lines` entries, block enabled,
+# session disabled, no agent segment.
+POWERLINE_CFG="${REPO}/claude-powerline.json"
+[ -f "$POWERLINE_CFG" ] || fail "P6.4: claude-powerline.json not found at $POWERLINE_CFG"
+jq . "$POWERLINE_CFG" > /dev/null 2>&1 || fail "P6.4: claude-powerline.json is not valid JSON"
+line_count="$(jq '.display.lines | length' "$POWERLINE_CFG")"
+[ "$line_count" = "2" ] || fail "P6.4: expected exactly 2 display.lines entries, got ${line_count}"
+[ "$(jq -r '.display.lines[1].segments.block.enabled' "$POWERLINE_CFG")" = "true" ] || fail "P6.4: block segment is not enabled on line 2"
+[ "$(jq -r '.display.lines[1].segments.session.enabled' "$POWERLINE_CFG")" = "true" ] && fail "P6.4: session segment is still enabled (should be false — replaced by block)"
+# No display.lines entry should define an `agent` segment (the 3rd line was removed).
+agent_present="$(jq '[.display.lines[].segments | has("agent")] | any' "$POWERLINE_CFG")"
+[ "$agent_present" = "false" ] || fail "P6.4: agent segment still present in display.lines (3rd line not removed)"
+
+# ---- P6.5 — zone_color() helper extraction (COLOR-02 enabler / ROADMAP SC #5) ----
+# zone_color defined exactly once; consumed by BOTH the Memory gauge AND the block-segment splice.
+zc_def="$(grep -cE '^zone_color\(\) \{' "$STATUS")"
+[ "$zc_def" = "1" ] || fail "P6.5: expected exactly 1 zone_color() definition, got ${zc_def}"
+# Count call-sites (excluding the definition line). Expected ≥2: Memory gauge + block segment.
+zc_calls="$(grep -cE 'zone_color "?\$(ctxpct|block_pct)"?' "$STATUS")"
+[ "$zc_calls" -ge "2" ] || fail "P6.5: expected ≥2 zone_color call-sites (Memory + block), got ${zc_calls}. Both gauges must consume the helper — no threshold drift."
+
+# ---- P6.6 — Silent fallback when block segment is absent (ROBUST-02 inheritance) ----
+# When powerline omits the block segment (non-Pro user / rate_limits hook unavailable),
+# the bar must continue rendering Model + Memory gauge with no `§ ... used ↻` leak.
+sid="p6-6-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" ""   # empty 3rd arg → no block segment
+out="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":15,"remaining_percentage":85}}' "$sid" "$fix" | bash "$STATUS" 2>&1)"
+exit_code=$?
+[ "$exit_code" = "0" ] || fail "P6.6: bar exited ${exit_code} when block segment absent (silent-fallback contract requires exit 0)"
+stripped="$(printf '%s' "$out" | strip_ansi)"
+# No `§ <digits>% used ↻` substring should appear — the block splice silently no-oped.
+echo "$stripped" | grep -qE '§ *[0-9]+% used ↻' && fail "P6.6: §-segment leaked into output despite missing block segment — silent fallback broken: $(printf '%s' "$stripped" | head -c 400)"
+# Memory gauge `% used` STILL appears (it doesn't depend on the block segment).
+echo "$stripped" | grep -qE '[0-9]+% used' || fail "P6.6: Memory gauge '% used' missing when block segment absent — fallback broke the gauge: $(printf '%s' "$stripped" | head -c 400)"
+p5_cleanup "$sid"
+
 # ---- D-08: PERF lock — per-render time budget ----
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
 # to prime the powerline cache (/tmp/gsd-pl-cache) and any other on-disk caches.
