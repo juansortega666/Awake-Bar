@@ -23,6 +23,56 @@ fail() {
   exit 1
 }
 
+# ---- Phase 5 fixture helpers (synthetic git states in /tmp) ----
+# Create a minimal git fixture dir with optional pre-seeded state cache.
+# Usage: p5_fixture <sid> <state-cache-line> [.git-subdir-to-mkdir]
+# Returns the fixture path on stdout.
+p5_fixture() {
+  local sid="$1" cache_line="$2" gitsub="${3:-}"
+  local fix="/tmp/${sid}-fixture"
+  mkdir -p "${fix}/.git"
+  [ -n "$gitsub" ] && mkdir -p "${fix}/.git/${gitsub}"
+  printf '%s' "$cache_line" > "/tmp/gsd-git-${sid}"
+  touch "/tmp/gsd-git-${sid}"  # fresh mtime → cache hit
+  printf '%s' "$fix"
+}
+
+# Pre-seed the powerline cache with a synthetic git segment. MANDATORY for any
+# test asserting Plan-02 splice output — the splices anchor on the green
+# truecolor `\e[38;2;135;215;135m`, which only appears in powerline output;
+# synthetic non-git fixtures don't trigger powerline's git segment, so we must
+# inject the anchor manually.
+# Usage: p5_seed_powerline <sid> "<branch-and-counters-and-markers>"
+# Examples:
+#   p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"        # ahead+dirty
+#   p5_seed_powerline "$sid" "⎇ test-branch ●"            # dirty only (Path B anchor)
+#   p5_seed_powerline "$sid" "⎇ test-branch"              # bare branch (transition states)
+#   p5_seed_powerline "$sid" "⎇ feat/very-long-branch-name-here ●"  # truncation test
+p5_seed_powerline() {
+  local sid="$1" segment="$2"
+  printf '%s %s%s\n' $'\033[38;2;135;215;135m' "$segment" $'\033[0m' > "/tmp/gsd-powerline-${sid}"
+  touch "/tmp/gsd-powerline-${sid}"  # fresh mtime → cache hit
+}
+
+# Clean up a Phase 5 fixture.
+p5_cleanup() {
+  local sid="$1"
+  rm -rf "/tmp/${sid}-fixture"
+  rm -f "/tmp/gsd-cmd-${sid}" "/tmp/gsd-live-${sid}" "/tmp/gsd-wave-${sid}" \
+        "/tmp/gsd-pkgver-${sid}" "/tmp/gsd-powerline-${sid}" "/tmp/gsd-git-${sid}" \
+        "/tmp/${sid}-input.json"
+}
+
+# Run the bar against a fixture, return stdout (ANSI preserved for color asserts).
+p5_render() {
+  local sid="$1" fix="$2"
+  printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$sid" "$fix" > "/tmp/${sid}-input.json"
+  bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1
+}
+
+# Strip ANSI escapes for text assertions.
+strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
+
 # ---- D-10: COMPAT lock — bash 3.2+ on macOS ----
 bver="$(bash --version 2>/dev/null | head -1)"
 echo "$bver" | grep -qE 'version (3\.2|[4-9])' || fail "bash version not 3.2+: $bver"
@@ -116,6 +166,175 @@ echo "$v1_out_b" | grep -qE " V[0-9v]" && fail "V1.B: V<ver> segment rendered wi
 echo "$v1_out_b" | grep -qE "Version:[[:space:]]*v0\.9-test" && fail "V1.B: legacy 'Version: v0.9-test' STATE.md fallback still active — should be off after v1.0 close: $(printf '%s' "$v1_out_b" | head -c 400)"
 rm -rf "${v1b_fixture}"
 rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}" "/tmp/${v1sid_b}-input.json"
+
+# ============================================================================
+# Phase 5 (v1.1) — Git state awareness tests (P5.1..P5.9)
+# ============================================================================
+# All tests build synthetic git fixtures in /tmp (no host repo dependency).
+# Tests that assert Plan-02 splice output MUST call p5_seed_powerline so the
+# splices have the green-truecolor anchor `\e[38;2;135;215;135m` to act on.
+
+# ---- P5.1: GIT-01 — behind count ↓N rendered in ámbar 178 (Path A: ahead+behind) ----
+# Pre-seed powerline cache so Plan 02's sed splice (`s/↑\([0-9]+\) /
+# ↑\1 ↓N /`) has an anchor to act on.
+sid="ship-gate-p5-1-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:2 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE '↑3 ↓2' || \
+  fail "P5.1: ↓2 not spliced after ↑3 (cache behind:2 + powerline ↑3): $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.1: ámbar 178 SGR not on line 1 (↓N should be colored ámbar): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.1b: GIT-01 — behind-only case, no ↑N anchor → Plan 02 Path B fires ----
+# Verifies the behind-only fallback splice from Plan 02 Task 2: when ↑N is
+# absent in powerline output, Plan 02's awk-based splice inserts ↓N directly
+# after the ⎇-token. GIT-01 covers behind regardless of ahead count.
+sid="ship-gate-p5-1b-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:2 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+# Note: NO ↑N in the seeded powerline — only the dirty marker. Path A's sed
+# will find no anchor; Path B's awk must fire and insert ↓2 after ⎇ test-branch.
+p5_seed_powerline "$sid" "⎇ test-branch ●"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE '↓2' || \
+  fail "P5.1b: ↓2 not present after Path B fallback (cache behind:2 + powerline without ↑N): $(printf '%s' "$out" | head -c 400)"
+# ↓2 should appear after the branch token, before (or at) the dirty marker.
+stripped_p51b="$(echo "$out" | strip_ansi | head -1)"
+pos_dn_b="$(printf '%s' "$stripped_p51b" | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
+pos_branch_b="$(printf '%s' "$stripped_p51b" | grep -bE -o 'test-branch' | head -1 | cut -d: -f1)"
+[ -n "$pos_branch_b" ] && [ -n "$pos_dn_b" ] && [ "$pos_branch_b" -lt "$pos_dn_b" ] || \
+  fail "P5.1b: ↓2 (pos $pos_dn_b) does not appear after test-branch (pos $pos_branch_b) — Path B splice anchored wrong: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.1b: ámbar 178 SGR not on line 1 for behind-only case: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.2: GIT-02 — .git/MERGE_HEAD + unmerged file → conflict text + rojo branch ----
+# Pre-seed powerline so the tail-flag awk splice has the green truecolor anchor.
+sid="ship-gate-p5-2-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:1 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch ●"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'conflict' || \
+  fail "P5.2: 'conflict' text not in output (cache conflict:1 set + powerline pre-seeded): $(printf '%s' "$out" | head -c 400)"
+# Branch should turn rojo 203
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;203m' || \
+  fail "P5.2: rojo 203 SGR not on line 1 (branch should turn rojo on conflict): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.3: GIT-03 — detached HEAD → "detached <sha>" replaces ⎇ branch in rojo ----
+# Pre-seed powerline so the sed branch-token replacement (`s/⎇ [^...]*/detached
+# <sha> /`) has the ⎇-token to match. For detached, seed WITHOUT counters since
+# the whole branch run is going to be replaced.
+sid="ship-gate-p5-3-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached:d39c2a1 no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'detached d39c2a1' || \
+  fail "P5.3: 'detached d39c2a1' not in output (cache detached + powerline ⎇-token seeded): $(printf '%s' "$out" | head -c 400)"
+# ⎇ branch icon should be GONE on line 1 (replaced by 'detached <sha>').
+echo "$out" | strip_ansi | head -1 | grep -qE '⎇ ' && \
+  fail "P5.3: ⎇-token still present after detached splice — branch-token replacement did not fire: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;203m' || \
+  fail "P5.3: rojo 203 not on line 1 (detached should render in rojo bold): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.4a: GIT-04 — no-upstream + ahead>0 → 'no-remote' + ámbar branch ----
+sid="ship-gate-p5-4a-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:1 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'no-remote' || \
+  fail "P5.4a: 'no-remote' not in output (no_upstream:1 + ↑3 seeded): $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.4a: ámbar 178 not on line 1 (branch should turn ámbar on no-remote+ahead): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.4b: GIT-04 negative — no-upstream + ahead=0 → no 'no-remote' (no nag) ----
+sid="ship-gate-p5-4b-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:1 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch ●"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'no-remote' && \
+  fail "P5.4b: 'no-remote' appeared when ahead=0 (should be suppressed — no nag on clean branches): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.5a: GIT-05 — .git/rebase-merge/ exists → 'rebasing' replaces ⎇ branch ----
+sid="ship-gate-p5-5a-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:1 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ test-branch"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'rebasing' || \
+  fail "P5.5a: 'rebasing' not in output: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.5a: ámbar 178 not on line 1 (rebasing should be ámbar bold): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.5b: GIT-06 — MERGE_HEAD without conflict → 'merging' ----
+sid="ship-gate-p5-5b-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:1' '')"
+p5_seed_powerline "$sid" "⎇ test-branch"
+out="$(p5_render "$sid" "$fix")"
+echo "$out" | strip_ansi | grep -qE 'merging' || \
+  fail "P5.5b: 'merging' not in output: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | head -1 | grep -qE $'\033\\[38;5;178m' || \
+  fail "P5.5b: ámbar 178 not on line 1: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.6a: LAYOUT-02 — branch name >20 chars truncated with U+2026 ----
+sid="ship-gate-p5-6a-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+# Inject a 31-char branch name: "feat/very-long-branch-name-here"
+p5_seed_powerline "$sid" "⎇ feat/very-long-branch-name-here ●"
+out="$(p5_render "$sid" "$fix")"
+# Expect truncation to "feat/very-long-bran…" (19 chars + U+2026 = 20 visible total)
+echo "$out" | strip_ansi | grep -qE 'feat/very-long-bran…' || \
+  fail "P5.6a: branch not truncated to 19 chars + …: $(printf '%s' "$out" | head -c 400)"
+# The full original name must NOT appear (post-truncation)
+echo "$out" | strip_ansi | grep -qE 'feat/very-long-branch-name-here' && \
+  fail "P5.6a: full 31-char branch name still present (truncation did not fire): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.6b: LAYOUT-02 — dir basename >20 chars truncated, model untouched ----
+# Use a synthetic powerline pre-seed containing the long basename rather than
+# relying on a live powerline run with cwd-derived basename. Determinism is
+# preferred — the truncation logic operates on $line1 regardless of where the
+# basename came from.
+sid="ship-gate-p5-6b-$$"
+p5_cleanup "$sid"
+fix="/tmp/${sid}-super-extra-long-project-directory-name"
+mkdir -p "${fix}/.git"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+touch "/tmp/gsd-git-${sid}"
+# Pre-seed powerline with the long basename followed by the standard segment
+# boundary (triple \e[49m), so Plan 02 Task 1 Step 5 (dir-basename truncation)
+# has a string to truncate.
+printf '%s super-extra-long-project-directory-name %s%s%s%s\n' \
+  $'\033[0m' \
+  $'\033[49m' $'\033[49m' $'\033[49m' \
+  $'\033[0m' > "/tmp/gsd-powerline-${sid}"
+touch "/tmp/gsd-powerline-${sid}"
+out="$(p5_render "$sid" "$fix")"
+# Expect dir basename truncated to "super-extra-long-pr…" (19 + … = 20 visible total)
+echo "$out" | strip_ansi | grep -qE 'super-extra-long-pr…' || \
+  fail "P5.6b: dir basename not truncated to 19 + …: $(printf '%s' "$out" | head -c 400)"
+# Full dir basename must NOT remain post-truncation
+echo "$out" | strip_ansi | grep -qE 'super-extra-long-project-directory-name' && \
+  fail "P5.6b: full 39-char dir basename still present (truncation did not fire): $(printf '%s' "$out" | head -c 400)"
+# Model name (if present in output) must NOT be truncated.
+echo "$out" | strip_ansi | grep -E 'Opus' | grep -qE 'Opus[^…]*$' || \
+  echo "P5.6b: model line check skipped (no Opus in output — fixture has no JSON model field)"
+rm -rf "$fix"
+p5_cleanup "$sid"
 
 # ---- W3 (checker-revision 2026-05-30): Wave-segment render path ----
 # TreSur smoke test runs in idle, so the Wave segment never renders during the
