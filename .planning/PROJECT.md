@@ -14,24 +14,24 @@ Roadmap awareness is the priority. Live awareness (what's running this second) i
 
 ### Validated
 
-(None yet — ship to validate)
+<!-- All 12 v1 requirements validated 2026-05-31 across Phases 1-4. Ship-gate (tests/v1-ship-gate.sh) locks PERF + PALETTE + COMPAT. -->
+
+- [x] **HOOK-01** (Phase 1) — `track-gsd.sh` rewritten to 17 PascalCase tokens + 4-positional schema
+- [x] **STATE-01** (Phase 1) — STATE.md frontmatter parsing + 4-field cmd-signal + alert helper
+- [x] **STAGE-01** (Phase 2) — All 6 Verify flavors render `✓` + distinct gerund labels
+- [x] **STAGE-02** (Phase 2) — 18 happy-path commands recognized live (case block + Next: derivations)
+- [x] **PLAN-01** (Phase 3) — Plan-within-phase counter `P27.2/4 · M3/8` (superseded by Phase 4 D-14 hierarchical cascade `M·Ph·W·Pl`)
+- [x] **QUICK-01** (Phase 3) — Quick/Fast slug suffix + spinner guard + cross-milestone visibility
+- [x] **ALERT-01** (Phase 3) — Inline alert counter with severity color (amber/red), zero counts hidden
+- [x] **CORE-01** (Phase 4) — Roadmap awareness as primary read; M·Ph cascade visible in Idle
+- [x] **MODE-01** (Phase 4) — 3 adaptive modes named (Idle / Active / Alert). *Descoped: context > 70% trigger moved to Context Management block per D-06.*
+- [x] **PALETTE-01** (Phase 4) — 7-color authoritative set `{114, 141, 178, 203, 231, 240, 252}` locked by ship-gate (`231` added during Phase 3 finalization for block titles)
+- [x] **PERF-01** (Phase 4) — Ship-gate verifies per-render median under 600ms noise-tolerant cap; 4s cache pattern preserved
+- [x] **COMPAT-01** (Phase 4) — bash 3.2+ verified by ship-gate; no new runtime deps (bash + jq + sed only)
 
 ### Active
 
-<!-- v1 redesign hypotheses. All assume the existing bar already exists (368-line `statusline-gsd.sh`) and is being EXTENDED, not replaced from zero. -->
-
-- [ ] **CORE-01**: Bar surfaces "where am I in the milestone" as the primary read — phase·plan position, milestone progress, next stage — visible at a glance even in idle mode
-- [ ] **STAGE-01**: All 6 flavors of Verify (verify, code-review, ui-review, eval-review, validate, secure) render with the same `✓` glyph but distinct gerund labels (Verifying / Code-reviewing / UI-reviewing / Eval-reviewing / Validating / Securing) so the user can read what's running without learning a new symbol per flavor
-- [ ] **STAGE-02**: All "happy-path" development commands of the framework are recognized live: `/gsd-discuss-phase`, `/gsd-plan-phase`, `/gsd-execute-phase`, `/gsd-verify-work`, `/gsd-code-review`, `/gsd-ui-review`, `/gsd-eval-review`, `/gsd-validate-phase`, `/gsd-secure-phase`, `/gsd-research-phase`, `/gsd-spec-phase`, `/gsd-ui-phase`, plus `/gsd-quick`, `/gsd-fast`, `/gsd-debug`, `/gsd-ship`, `/gsd-complete-milestone`
-- [ ] **PLAN-01**: Plan progress within a phase is shown as a double counter `P27.2/4 · M3/8` (phase.plan-running / total-plans-in-phase · milestone-phase-done / total-phases) — text-based, no extra graphic
-- [ ] **QUICK-01**: `/gsd-quick` and `/gsd-fast` work appear in the same GSD block (not a separate one) with dedicated glyphs (⚡ quick, » fast) and remain visible even when the milestone is archived between milestones — so quick/fast work between milestones is no longer invisible
-- [ ] **ALERT-01**: Pending items render as a counter at the end of the GSD line: `⚠ 3 todo · 2 uat · 1 blocker` — zero counts hidden, severity color (amber for todo/uat, red for blocker)
-- [ ] **MODE-01**: Bar has 3 adaptive modes — **Idle** (one line: milestone · position · next), **Active** (expands with gerund stage + spinner + cur/tot subagent counter), **Alert** (adds a row when blockers exist OR context usage > 70%)
-- [ ] **PALETTE-01**: Bar keeps current palette — purple 141 (progress fill + active step), light gray 252 (active values), dark gray 240 (structure / dotted track), green 114 (live signal), amber 178 / red 203 (context gauge zones, alert severity). No new colors introduced in v1.
-- [ ] **STATE-01**: Bar reads its data from `.planning/STATE.md` (phase, plan, percent, completed/total phases, milestone) PLUS the existing live signal files (`/tmp/gsd-cmd-<sid>`, `/tmp/gsd-live-<sid>`). New live signals MAY be added to surface stage flavors and quick/fast — but STATE.md remains the authoritative slow source.
-- [ ] **HOOK-01**: The `track-gsd.sh` hook is rewritten to map all of STAGE-02's commands to distinct stage tokens (today it collapses to 5: Execute / Verify / Discuss / Roadmap / Plan)
-- [ ] **PERF-01**: The redesigned bar must survive `refreshInterval: 1` (~60×/min). Any new STATE.md parsing or external command MUST be cached with a TTL of at least 4s (matching the powerline cache pattern).
-- [ ] **COMPAT-01**: Bar continues to work on Claude Code's macOS TUI (256-color ANSI). No new runtime dependencies introduced (bash + jq + sed only in the main script; powerline remains the only `npx` call, already cached).
+(None — v1 milestone closed 2026-05-31. Next milestone activates new requirements.)
 
 ### Out of Scope
 
@@ -122,4 +122,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-28 after initialization*
+*Last updated: 2026-05-31 — Phase 4 complete; all 12 v1 requirements validated; milestone ready for `/gsd-complete-milestone`*
