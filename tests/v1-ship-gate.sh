@@ -79,6 +79,33 @@ p5_render() {
   bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1
 }
 
+# ---- Phase 6 fixture helper ----
+# Pre-seed the powerline cache with a 2-line output matching the post-Phase-6
+# claude-powerline.json layout (line 1: dir+git, line 2: model+block). The
+# block-segment shape mirrors powerline's `block` segment output: `◱ N% (Xh Ym)`.
+# Pass an empty third arg to test the silent-fallback case (block absent — non-Pro user).
+#
+# Usage:
+#   p6_seed_powerline <sid> "<git-segment>" "<block-shape-or-empty>"
+# Examples:
+#   p6_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)"
+#   p6_seed_powerline "$sid" "⎇ test-branch ●" "87% (0h 47m)"   # sub-hour reset
+#   p6_seed_powerline "$sid" "⎇ test-branch ●" ""                # silent fallback
+p6_seed_powerline() {
+  local sid="$1" gitseg="$2" block="${3:-}"
+  {
+    printf '%s %s%s%s\n' $'\033[38;2;135;215;135m' "$gitseg" $'\033[0m' $'\033[49m'
+    if [ -n "$block" ]; then
+      printf '%s✱ Claude %s%s%s%s%s◱ %s%s%s\n' \
+        $'\033[38;5;111m' $'\033[0m' $'\033[49m' $'\033[49m' $'\033[49m' \
+        $'\033[38;5;111m' "$block" $'\033[0m' $'\033[49m'
+    else
+      printf '%s✱ Claude %s%s\n' $'\033[38;5;111m' $'\033[0m' $'\033[49m'
+    fi
+  } > "/tmp/gsd-powerline-${sid}"
+  touch "/tmp/gsd-powerline-${sid}"
+}
+
 # Strip ANSI escapes for text assertions.
 strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
@@ -460,6 +487,80 @@ echo "$w3_out" | grep -qE 'W2/5' || fail "W3: W2/5 segment not rendered with Exe
 # Plan info via STATE.md (TreSur STATE.md body has "Plan: <n> of <m>" for the
 # current phase or not — if not, Pl is correctly absent; we don't hard-require Pl)
 rm -f "/tmp/gsd-cmd-${w3sid}" "/tmp/gsd-live-${w3sid}" "/tmp/gsd-wave-${w3sid}" "/tmp/${w3sid}-input.json"
+
+# ============================================================================
+# Phase 6: Quota Display & Layout Consolidation tests (P6.1..P6.5 + P6.6)
+# ============================================================================
+# Locks the v1.1 quota/layout contract under permanent regression coverage.
+# Every P6.x test would FAIL against the pre-Phase-6 baseline (per Plan 06-03 spec).
+
+# ---- P6.1 — Block segment format (QUOTA-01) ----
+# Asserts powerline's `◱ N% (Xh Ym)` is transformed into our spec format
+# `§ N% used ↻ Nh` (or `↻ Nm` when reset <1h). Two sub-fixtures: ≥1h and <1h.
+sid="p6-1-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE '§ 25% used ↻ 4h' || fail "P6.1a (≥1h reset): expected '§ 25% used ↻ 4h' in output, got: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | grep -qE '◱' && fail "P6.1a: native powerline ◱ icon leaked into output (should be replaced by §)"
+echo "$out" | grep -qE '\(4h 12m\)' && fail "P6.1a: native powerline paren format leaked into output"
+p5_cleanup "$sid"
+
+sid="p6-1b-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "87% (0h 47m)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE '§ 87% used ↻ 47m' || fail "P6.1b (<1h reset): expected '§ 87% used ↻ 47m', got: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P6.2 — Current session % zone color (COLOR-02) ----
+# Asserts the N% in the §-segment uses zone_color(): LG for 0-33, YELc for 34-66,
+# B+REDc for 67+. The N% is the FIRST `% used` occurrence on line 2 (block segment;
+# Memory gauge `% used` is the second occurrence on the same line).
+# We assert on the raw (un-stripped) output using grep -E with the expected SGR.
+sid="p6-2green-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "22% (4h 0m)"
+out_raw="$(p5_render "$sid" "$fix")"
+# The pct value `22` must be preceded by the LG (252) SGR.
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;252m22%' || fail "P6.2 (verde zone): 22% not wrapped in LG (252) SGR — got: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+sid="p6-2yellow-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "51% (2h 30m)"
+out_raw="$(p5_render "$sid" "$fix")"
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;178m51%' || fail "P6.2 (ámbar zone): 51% not wrapped in YELc (178) SGR — got: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+sid="p6-2red-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "84% (1h 0m)"
+out_raw="$(p5_render "$sid" "$fix")"
+printf '%s' "$out_raw" | grep -qE $'\033\\[1m\033\\[38;5;203m84%' || fail "P6.2 (rojo zone): 84% not wrapped in B+REDc (1;203) SGR — got: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# ---- P6.2b — Reset countdown always light gray (COLOR-02 / C-07) ----
+# Even in the rojo zone (>=67%), the `↻ Nh` countdown stays in LG (252).
+sid="p6-2b-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "84% (1h 0m)"
+out_raw="$(p5_render "$sid" "$fix")"
+# Anchor: the `↻` character must be preceded by the LG SGR, not by REDc or YELc.
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;252m↻' || fail "P6.2b: reset countdown ↻ not wrapped in LG (252) SGR — countdown coloring drifted from C-07 — got: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# ---- P6.3 — Language unified to English (COLOR-03) ----
+# `Restante` is gone from source AND from runtime output. `% used` is present.
+grep -q 'Restante' "$STATUS" && fail "P6.3 (source): 'Restante' still present in $STATUS — COLOR-03 not honored"
+sid="p6-3-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p6_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)"
+out="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":15,"remaining_percentage":85}}' "$sid" "$fix" | bash "$STATUS" 2>&1 | strip_ansi)"
+echo "$out" | grep -q 'Restante' && fail "P6.3 (runtime): 'Restante' leaked into rendered output: $(printf '%s' "$out" | head -c 400)"
+# `% used` must appear at least twice (block segment + Memory gauge).
+[ "$(echo "$out" | grep -oE '% used' | wc -l | tr -d ' ')" -ge 2 ] || fail "P6.3 (runtime): expected '% used' at least twice (block segment + Memory gauge), got: $(echo "$out" | grep -oE '% used' | wc -l) occurrences"
+p5_cleanup "$sid"
 
 # ---- D-08: PERF lock — per-render time budget ----
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
