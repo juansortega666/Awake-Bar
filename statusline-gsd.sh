@@ -2,10 +2,10 @@
 # Two titled, grayscale statusline blocks (title → content → gap):
 #
 #   ✳ Context Management      ← bold white title
-#    <claude-powerline>        ← directory·git  /  model·session·<context gauge>
+#    <claude-powerline>        ← directory · ◈ version · git / model · session · <ctx gauge>
 #                              ← zero-width-space spacer
 #   ◎ GSD Status              ← bold white title
-#    Version: <v> · Now: <glyph> <stage> <plan>  <bar> <step/total> ⇒ Next: <stage>
+#    Now: <glyph> <stage> <plan>  <bar> <step/total> ⇒ Next: <stage>
 #                              ← trailing spacer (blank line above "accept edits")
 #
 # The GSD line is read from the current project's .planning/STATE.md. It shows from
@@ -54,6 +54,34 @@ SP=$'\xe2\x80\x8b'
 session_id="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
 now_epoch="$(date +%s)"
 
+# ---- cwd resolution (shared by version walk below + GSD project walk later) ----
+cwd="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // .workspace.project_dir // empty' 2>/dev/null)"
+[ -z "$cwd" ] && cwd="$PWD"
+
+# ---- project version (read package.json with 4s cache, PERF-01) ----
+# Walks up from cwd looking for the nearest package.json. Rendered as "◈ <semver>"
+# spliced between directory and git segments in the powerline (Context Management
+# block). Independent of GSD STATE.md walk so the version still shows in non-GSD
+# directories. Empty when no package.json found upward — splice below is skipped.
+pkgver=""
+_d="$cwd"
+while [ "$_d" != "/" ] && [ -n "$_d" ]; do
+  if [ -f "$_d/package.json" ]; then
+    pkgcache="/tmp/gsd-pkgver-${session_id}"
+    if [ -f "$pkgcache" ]; then
+      pkmtime="$(stat -f %m "$pkgcache" 2>/dev/null || stat -c %Y "$pkgcache" 2>/dev/null)"
+      [ -n "$pkmtime" ] && [ "$(( now_epoch - pkmtime ))" -le 4 ] && pkgver="$(cat "$pkgcache")"
+    fi
+    if [ -z "$pkgver" ]; then
+      pkgver="$(jq -r '.version // empty' "$_d/package.json" 2>/dev/null)"
+      [ -n "$pkgver" ] && printf '%s' "$pkgver" > "$pkgcache" 2>/dev/null || true
+    fi
+    break
+  fi
+  _d="$(dirname "$_d")"
+done
+unset _d
+
 # ---- line 1: existing powerline, stdin forwarded untouched ----
 # The powerline call spawns node via npx — too heavy to run on every render once
 # refreshInterval:1 is enabled (it would fire ~60×/min). Cache its RAW output per
@@ -72,11 +100,40 @@ if [ -z "$line1" ]; then
   printf '%s' "$line1" > "$plcache" 2>/dev/null || true
 fi
 
+# ---- splice "◈ <pkgver>" between directory and git segments ----
+# claude-powerline doesn't support custom segments (only its predefined set: directory,
+# git, model, session, context, agent, today, version-of-claude-code). The version we
+# want to surface is the PROJECT's package.json semver — so we splice it ourselves AFTER
+# the powerline call but BEFORE the separator transform on the next block. We add our
+# own segment-boundary marker (triple bg-reset) so the existing separator splice picks
+# up "dir | ver | git | model | ..." in one pass. Skipped when no package.json found.
+#
+# IMPORTANT: powerline output is MULTI-LINE (3 lines: dir+git / model+session+ctx / agent
+# per claude-powerline.json). A plain sed `s/X/&Y/` would substitute the first X on EACH
+# line. Use awk to substitute the first match across the WHOLE input — version appears
+# exactly once, between dir and git on line 1.
+esc=$'\033'
+if [ -n "$pkgver" ]; then
+  verseg=" ${LG}◈ ${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
+  triple="${esc}[49m${esc}[49m${esc}[49m"
+  line1="$(printf '%s' "$line1" | awk -v pat="$triple" -v rep="$verseg" '
+    !done {
+      p = index($0, pat)
+      if (p > 0) {
+        printf "%s%s%s%s\n", substr($0, 1, p + length(pat) - 1), rep, substr($0, p + length(pat)), ""
+        done = 1
+        next
+      }
+    }
+    { print }
+  ')"
+fi
+
 # claude-powerline's "minimal" style has no separator option, so splice a dark-gray
 # "-" between segments. Boundaries are marked by a TRIPLE bg-reset (\e[49m ×3); the
 # first segment and the line-end use a single \e[49m, so spaces inside a value like
-# "Opus 4.7 (1M context)" stay untouched.
-esc=$'\033'
+# "Opus 4.7 (1M context)" stay untouched. $esc was declared in the version-splice
+# block above.
 line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}-${R}${esc}[49m${esc}[49m${esc}[49m/g")"
 
 # Bold the active git branch. powerline renders the whole git segment in green
@@ -129,9 +186,7 @@ ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxleft}% Restante${R}"
 line1="$(printf '%s' "$line1" | sed "/§/s/\$/${ctxseg}/")"
 
 # ---- locate the GSD project root (walk up from Claude's cwd) ----
-cwd="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // .workspace.project_dir // empty' 2>/dev/null)"
-[ -z "$cwd" ] && cwd="$PWD"
-
+# $cwd already resolved above (used by the version walk).
 state=""
 dir="$cwd"
 while [ "$dir" != "/" ] && [ -n "$dir" ]; do
@@ -236,25 +291,9 @@ percent="${percent//[^0-9]/}"; cdone="${cdone//[^0-9]/}"; ctot="${ctot//[^0-9]/}
 [ -z "$cdone" ] && cdone=0
 [ -z "$ctot" ] && ctot=0
 
-# ---- patch-level version display (read package.json with 4s cache, PERF-01) ----
 # $milestone (from STATE.md, e.g. "v1.8") drives planning lookups (archived check etc).
-# $milestone_display drives the "Version:" segment only. When package.json exists at
-# the project root, use its full semver (e.g. "1.7.18") so the bar shows patch level;
-# otherwise fall through to the STATE.md alias.
-milestone_display="$milestone"
-if [ -f "$dir/package.json" ]; then
-  pkgcache="/tmp/gsd-pkgver-${session_id}"
-  pkgver=""
-  if [ -f "$pkgcache" ]; then
-    pkmtime="$(stat -f %m "$pkgcache" 2>/dev/null || stat -c %Y "$pkgcache" 2>/dev/null)"
-    [ -n "$pkmtime" ] && [ "$(( now_epoch - pkmtime ))" -le 4 ] && pkgver="$(cat "$pkgcache")"
-  fi
-  if [ -z "$pkgver" ]; then
-    pkgver="$(jq -r '.version // empty' "$dir/package.json" 2>/dev/null)"
-    [ -n "$pkgver" ] && printf '%s' "$pkgver" > "$pkgcache" 2>/dev/null || true
-  fi
-  [ -n "$pkgver" ] && milestone_display="$pkgver"
-fi
+# Version display lives in Context Management now (◈ <pkgver> spliced into powerline
+# above line ~110), so no $milestone_display variable is needed here anymore.
 
 # ---- progress bar (8 cells) ----
 cells=8
@@ -722,7 +761,7 @@ if [ "$done" -eq 1 ]; then
     # Rare: archived + non-quick/fast live stage (e.g. /gsd-new-milestone running
     # between milestones BEFORE STATE.md rewrite). Fall through to full layout
     # so the user still sees the in-flight command — matches pre-Phase-3 behavior.
-    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   elif [ "$has_alerts" -eq 1 ]; then
     # D-16: archived + alerts only — render alert segment only (NO leading 4-space gap
     # since nothing precedes it). REUSE $alertseg (single source of truth for alert
@@ -739,11 +778,11 @@ else
   # Alert row (if has_alerts) is appended in both branches via $alertseg.
   if [ "$is_live" -eq 1 ]; then
     # Live command running — full layout with Now: segment
-    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   else
     # Idle: ${phaseplanseg:+...} expansion handles the empty-vs-present case in
     # one line — collapsed from the legacy if/else after Current: unified the layout.
-    seg="${DG}Version:${R} ${LG}${milestone_display}${R} ${DG}·${R} ${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
+    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
   fi
 fi
 
