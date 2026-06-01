@@ -54,6 +54,11 @@ Roadmap awareness is the priority. Live awareness (what's running this second) i
 Active requirements live in `.planning/REQUIREMENTS.md` (formal v1.1 IDs). The discuss-doc at
 `.planning/notes/v1.1-context-management-DISCUSS.md` is the authoritative spec for the v1.1 scope.
 
+**UAT-discovered v1.2 candidates** (post-execute /gsd-verify-work findings — see `.planning/phases/06-quota-layout-consolidation/06-UAT.md` Gaps section):
+
+- **COLD-01**: First render of a new Claude Code session takes ~2.6s due to `npx` fetching `@owloops/claude-powerline`. User perceives Context Management as "hidden" on new tabs. v1.1 partial fix (`e9a1462`) shaved ~400ms via git_with_timeout repair; the npx delay remains. v1.2: design background warm-up pattern that doesn't regress warm path (1st attempt did), OR add SessionStart hook to pre-warm cache.
+- **SPLICE-01**: Version splice anchors on triple-bg-reset (powerline's old inline format). Phase 6's JSON config change made powerline emit multi-line single-bg-reset format. Warm renders no longer show `V<pkgver>` even though cold synth does. Ship-gate V1.A passes for the wrong reason (cold synth covers the assertion). v1.2: re-anchor version splice on dir basename (works regardless of segment format).
+
 ### Deferred to v1.2+
 
 Surfaced during v1.0 close + v1.1 discuss, intentionally scoped OUT of v1.1.
