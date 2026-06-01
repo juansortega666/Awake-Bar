@@ -573,12 +573,19 @@ while [ "$ci" -le "$ccells" ]; do
   ci=$((ci + 1))
 done
 ctxbar="${ctxbar}${R}"
-# "NN% Restante" = context still available — bold red once the gauge enters the
-# red zone (cfill >= 7, i.e. ~72%+ used); light gray otherwise.
-if [ "$cfill" -ge 7 ]; then numcol="${B}${REDc}"; else numcol="$LG"; fi
-# splice "- <gauge> NN% Restante" onto the powerline session line (carries §);
-# the session segment already ends with a space.
-ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxleft}% Restante${R}"
+# Color the gauge number using the canonical 3-zone helper (COLOR-02 — single
+# source of truth, shared with Plan 06-02's Current session % rendering).
+# Drives off ctxpct (USED percentage) — same input as the gauge bar fill.
+# Intentional shift from v1.0's `cfill >= 7` (~72%) inline heuristic to the
+# canonical 67% threshold locked by CONTEXT.md C-06 (no drift between gauges).
+numcol="$(zone_color "$ctxpct")"
+# Splice "- <gauge> NN% used" onto the powerline session line (carries §);
+# the session segment already ends with a space. Inverts the v1.0 math: we
+# now display the USED percentage (ctxpct) directly, matching Claude's native
+# UI ("Current session 25% used") and unifying language to English (C-04).
+# The gauge bar visualization (▓ filled = used) was already correct — only
+# the trailing number+label change.
+ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxpct}% used${R}"
 line1="$(printf '%s' "$line1" | sed "/§/s/\$/${ctxseg}/")"
 
 # ---- locate the GSD project root (walk up from Claude's cwd) ----
