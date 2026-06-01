@@ -10,6 +10,26 @@ GSD Status Bar is a Claude Code statusline system that reflects the real state o
 
 Roadmap awareness is the priority. Live awareness (what's running this second) is secondary. If the bar is space-constrained, position-in-the-plan wins over live spinner. If everything else fails, the user must still know which phase they're on, how much of the milestone is done, and what comes next.
 
+## Current Milestone: v1.1 Context Management Refinements
+
+**Goal:** Evolve the Context Management block to communicate git state, Claude.ai quota (Pro/Max), and conversation context using one unified 3-zone mental model (green/amber/red) and text labels (not glyphs) for rare states.
+
+**Target features:**
+- New git state indicators with text labels: `↓N` behind, `conflict`, `detached`, `no-remote`
+- Current session usage + reset countdown via powerline `block` segment, compact format `§ N% used ↻ Nh`
+- Unified 3-zone color rule applied to both Current session and Memory gauges
+- Layout consolidation: 2 lines (drop empty agent line), English unification (`% used` not `Restante`), state-aware branch color
+- Robustness: >20 char truncation, show-all-flags accumulation, silent fallback on data source failures
+
+**Scope boundaries (explicit):**
+- ✓ IN: Context Management block (first block of the bar)
+- ✗ OUT: GSD Status block (second block, untouched in v1.1)
+- ✗ OUT: Open-source readiness (license, README, contribution guide — deferred to v1.2+)
+- ✗ OUT: Exotic command coverage (EXOT-01..04 moved to v1.2+ deferred)
+- ✗ OUT: Aesthetic layer alternatives (AEST-01..02 moved to v1.2+ deferred)
+
+**Source:** Full discussion spec lives in `.planning/notes/v1.1-context-management-DISCUSS.md` (300+ lines). REQUIREMENTS.md is derived from that spec; do not duplicate decisions here.
+
 ## Requirements
 
 ### Validated
@@ -31,27 +51,38 @@ Roadmap awareness is the priority. Live awareness (what's running this second) i
 
 ### Active
 
-Candidates for next milestone (v1.1 — iterative bar refinement). Surfaced from v1 archive and post-ship usage; `/gsd-new-milestone` will refine / drop / merge.
+Active requirements live in `.planning/REQUIREMENTS.md` (formal v1.1 IDs). The discuss-doc at
+`.planning/notes/v1.1-context-management-DISCUSS.md` is the authoritative spec for the v1.1 scope.
 
-**Now: ambiguity** (user-raised at v1.0 close, 2026-06-01)
+### Deferred to v1.2+
+
+Surfaced during v1.0 close + v1.1 discuss, intentionally scoped OUT of v1.1.
+
+**Now: ambiguity in GSD Status block** (user-raised at v1.0 close, 2026-06-01)
 - `Now:` segment doesn't match framework reality across all states. Specifically: idle behavior shows STATE.md `status:` (last-completed action, not current intent), stale-live behavior keeps spinning during 60s+ gaps in subagent events, and unknown stages render raw without warnings. See ambiguity matrix in `statusline-gsd.sh:425-498`.
-- Approach intent: iterate gradually, not as one rewrite.
+- Deferred to v1.2 because v1.1 scope is strictly Context Management block.
 
-**Exotic command coverage** (from v1 REQUIREMENTS.md v2 section)
+**Open-source readiness** (raised at v1.1 discuss, 2026-06-01)
+- License selection, README, CONTRIBUTING.md, public repo setup
+- Deferred because v1.1 is personal-use refinement; open-source is a separate concern requiring its own milestone
+
+**Exotic command coverage**
 - **EXOT-01**: Recognize `/gsd-autonomous` runs (autonomous-mode indicator)
 - **EXOT-02**: Recognize `/gsd-workstreams` (active workstream)
 - **EXOT-03**: Recognize `/gsd-new-workspace` (workspace vs main repo)
 - **EXOT-04**: Recognize `/gsd-thread` (active thread)
+- Deferred because user works single-flow on TreSur — no multi-stream / autonomous workflows today
 
-**Aesthetic layer** (from v1 REQUIREMENTS.md v2 section)
+**Aesthetic layer**
 - **AEST-01**: Optional semantic color-per-stage (currently all stages share green-when-live)
 - **AEST-02**: Alternative palette aligned with consumer project (e.g. TreSur indigo `#5B5FE6`)
+- Deferred because v1.1 standardizes the unified 3-zone color rule first; palette variants come after
 
-**Carry-forward fixes** (from v1.0 MILESTONES.md deferred items)
-- ROADMAP Phase 4 success criterion #5 (6→7 color palette wording)
-- WR-02 bash 10+ regex future-proofing (cosmetic)
-- `phase.complete` SDK CLI overcount bug (M5/4 observed)
-- Framework-side: `/gsd-execute-phase` orchestrator emit `Wave N/M:` Task labels (consumer plumbing dormant without it)
+**Carry-forward fixes from v1.0**
+- ROADMAP Phase 4 success criterion #5 (6→7 color palette wording) — cosmetic
+- WR-02 bash 10+ regex future-proofing — cosmetic
+- `phase.complete` SDK CLI overcount bug (M5/4 observed) — upstream framework issue
+- Framework-side: `/gsd-execute-phase` orchestrator emit `Wave N/M:` Task labels — consumer plumbing dormant without it
 
 ### Out of Scope
 
@@ -142,4 +173,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-31 — Phase 4 complete; all 12 v1 requirements validated; milestone ready for `/gsd-complete-milestone`*
+*Last updated: 2026-06-01 — v1.0 shipped + closed; v1.1 Context Management Refinements milestone started, discuss-doc captured in `.planning/notes/v1.1-context-management-DISCUSS.md`*
