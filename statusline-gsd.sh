@@ -2,7 +2,7 @@
 # Two titled, grayscale statusline blocks (title → content → gap):
 #
 #   ✳ Context Management      ← bold white title
-#    <claude-powerline>        ← directory · ◈ version · git / model · session · <ctx gauge>
+#    <claude-powerline>        ← directory · V version · git / model · session · <ctx gauge>
 #                              ← zero-width-space spacer
 #   ◎ GSD Status              ← bold white title
 #    Now: <glyph> <stage> <plan>  <bar> <step/total> ⇒ Next: <stage>
@@ -114,7 +114,7 @@ fi
 # exactly once, between dir and git on line 1.
 esc=$'\033'
 if [ -n "$pkgver" ]; then
-  verseg=" ${LG}◈ ${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
+  verseg=" ${LG}V ${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
   triple="${esc}[49m${esc}[49m${esc}[49m"
   line1="$(printf '%s' "$line1" | awk -v pat="$triple" -v rep="$verseg" '
     !done {
