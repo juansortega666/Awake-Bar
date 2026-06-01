@@ -558,8 +558,11 @@ fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0
 p6_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)"
 out="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":15,"remaining_percentage":85}}' "$sid" "$fix" | bash "$STATUS" 2>&1 | strip_ansi)"
 echo "$out" | grep -q 'Restante' && fail "P6.3 (runtime): 'Restante' leaked into rendered output: $(printf '%s' "$out" | head -c 400)"
-# `% used` must appear at least twice (block segment + Memory gauge).
-[ "$(echo "$out" | grep -oE '% used' | wc -l | tr -d ' ')" -ge 2 ] || fail "P6.3 (runtime): expected '% used' at least twice (block segment + Memory gauge), got: $(echo "$out" | grep -oE '% used' | wc -l) occurrences"
+# `% used` must appear in the block segment (Current session quota). Memory
+# gauge dropped its `used` suffix in v1.1 polish (UAT 2026-06-01) — the filled
+# bar already conveys "used", the word was redundant. So we require exactly 1
+# occurrence (block only), not 2.
+[ "$(echo "$out" | grep -oE '% used' | wc -l | tr -d ' ')" -ge 1 ] || fail "P6.3 (runtime): expected '% used' at least once (block segment), got: $(echo "$out" | grep -oE '% used' | wc -l) occurrences"
 p5_cleanup "$sid"
 
 # ---- P6.4 — 2-line layout (LAYOUT-01) ----
@@ -596,8 +599,10 @@ exit_code=$?
 stripped="$(printf '%s' "$out" | strip_ansi)"
 # No `§ <digits>% used ↻` substring should appear — the block splice silently no-oped.
 echo "$stripped" | grep -qE '§ *[0-9]+% used ↻' && fail "P6.6: §-segment leaked into output despite missing block segment — silent fallback broken: $(printf '%s' "$stripped" | head -c 400)"
-# Memory gauge `% used` STILL appears (it doesn't depend on the block segment).
-echo "$stripped" | grep -qE '[0-9]+% used' || fail "P6.6: Memory gauge '% used' missing when block segment absent — fallback broke the gauge: $(printf '%s' "$stripped" | head -c 400)"
+# Memory gauge STILL appears (it doesn't depend on the block segment).
+# v1.1 polish (UAT 2026-06-01): gauge dropped its `used` suffix — just `N%` now.
+# Assert the gauge fragment exists (bar + N%), not the obsolete `% used` label.
+echo "$stripped" | grep -qE '▓.*[0-9]+%' || fail "P6.6: Memory gauge missing when block segment absent — fallback broke the gauge: $(printf '%s' "$stripped" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- D-08: PERF lock — per-render time budget ----

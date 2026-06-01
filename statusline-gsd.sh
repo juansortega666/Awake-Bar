@@ -415,7 +415,9 @@ if [ -n "$block_match" ]; then
   # Color the N% via zone_color (COLOR-02 — same thresholds as Memory gauge).
   # The reset countdown stays in light gray (C-07 — neutral info).
   pct_color="$(zone_color "$block_pct")"
-  blockseg="${LG}§${R} ${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
+  # Leading space ensures `-` separator has visible gap before `§` glyph.
+  # Without it: `Claude -§ 25%` (dash glued to glyph). With it: `Claude - § 25%`.
+  blockseg=" ${LG}§${R} ${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
 
   # Replace powerline's native block segment in line1. Anchor on the
   # `<digits>% (<reset>)` substring — plus the immediately preceding glyph
@@ -674,7 +676,11 @@ numcol="$(zone_color "$ctxpct")"
 # UI ("Current session 25% used") and unifying language to English (C-04).
 # The gauge bar visualization (▓ filled = used) was already correct — only
 # the trailing number+label change.
-ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxpct}% used${R}"
+# Drops "used" from the trailing label per user UAT 2026-06-01 — the gauge's
+# filled cells already convey "used", the word is redundant and adds line
+# width without signal. NO leading space: the model segment's trailing
+# space (from powerline) provides the gap before `-`.
+ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
 # Anchor on `✱` (the model segment glyph — always present on line 2). Pre-v1.1
 # this splice anchored on `§` (the session segment's glyph), which worked because
 # session was always enabled. Post-v1.1, the `§` is installed by the block
