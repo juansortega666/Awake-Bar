@@ -1,5 +1,5 @@
 {
-  "_comment": "Context Management block. Segments grouped across 3 lines for readability: (1) directory + git, (2) model + session (context is disabled here — statusline-gsd.sh renders the usage gauge in its place), (3) agent. See display.lines. NOTE: claude-powerline.json is strict JSON — `//` comments break it and silently fall back to defaults; use `_comment` keys (ignored by the parser) instead.",
+  "_comment": "Context Management block. Segments grouped across 2 lines for readability: (1) directory + git, (2) model + session(disabled, kept for future toggle) + context(disabled — statusline-gsd.sh renders the usage gauge) + block(enabled, Claude.ai 5-hour quota window) + today(disabled). The legacy 3rd 'agent' line was removed at v1.1 — it was always empty during normal operation (subagent-statusline.sh covers that signal). NOTE: claude-powerline.json is strict JSON — `//` comments break it and silently fall back to defaults; use `_comment` keys (ignored by the parser) instead.",
   "theme": "custom",
   "colors": {
     "custom": {
@@ -9,7 +9,8 @@
       "session":   { "bg": "none", "fg": "#d0d0d0" },
       "context":   { "bg": "none", "fg": "#d0d0d0" },
       "agent":     { "bg": "none", "fg": "#d0d0d0" },
-      "today":     { "bg": "none", "fg": "#d0d0d0" }
+      "today":     { "bg": "none", "fg": "#d0d0d0" },
+      "block":     { "bg": "none", "fg": "#d0d0d0" }
     }
   },
   "display": {
@@ -30,15 +31,13 @@
         "segments": {
           "_comment_today": "today (daily $ cost) intentionally hidden — not used right now. To bring it back set today.enabled=true; the segment and its color are kept here for future use.",
           "_comment_context": "context segment disabled here — statusline-gsd.sh renders a 3-zone (green→amber→red) usage gauge in its place, fed by context_window.used_percentage. Re-enable here only if you drop the script gauge.",
+          "_comment_session": "session segment disabled at v1.1 — replaced by `block` (5-hour rate-limit window utilization). Kept in config (enabled:false) so future toggles don't require resurrecting the segment entry.",
+          "_comment_block": "block segment enabled at v1.1 (QUOTA-01). Powerline reads Claude Code's rate_limits hook. Default output is `◱ N% (Xh Ym)`. statusline-gsd.sh post-processes this into `§ N% used ↻ Nh` (or `↻ Nm` when <1h) and applies the 3-zone color rule to the N%.",
           "model": { "enabled": true },
-          "session": { "enabled": true, "type": "tokens", "costSource": "calculated" },
+          "session": { "enabled": false, "type": "tokens", "costSource": "calculated" },
           "context": { "enabled": false, "showPercentageOnly": false, "displayStyle": "text", "autocompactBuffer": 33000 },
-          "today": { "enabled": false, "type": "cost" }
-        }
-      },
-      {
-        "segments": {
-          "agent": { "enabled": true, "showLabel": false }
+          "today": { "enabled": false, "type": "cost" },
+          "block": { "enabled": true }
         }
       }
     ]
