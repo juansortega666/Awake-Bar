@@ -322,14 +322,17 @@ fi
 # block above.
 # ---- 20-char dir-basename truncation (LAYOUT-02) ----
 # The directory is the first plain-text run in line1, ending at the first
-# segment boundary. Powerline emits "\e[<color>m DIR \e[0m\e[49m\e[49m\e[49m..."
-# so the dir text is between the LAST `m` of the opening color and the FIRST
-# `\e` of the segment reset. Extract by trimming leading ANSI/space, then
-# capturing chars up to (but not including) the next \e.
+# segment boundary. Powerline emits "\e[<...>m\e[49m\e[<color>m DIR \e[0m\e[49m\e[49m\e[49m..."
+# so the dir text appears between an opening `\e[<color>m` SGR and the next `\e`.
+# Extract by skipping all leading ANSI escape sequences and the opening dir-color
+# SGR (which contains digits — the prior regex `[^A-Za-z0-9_]*` skip was halted
+# by those digits, causing it to only capture "0m"), then capture chars up to the
+# next `\e`. The explicit anchor on `\e\[[^m]*m ` (any SGR followed by space)
+# is the most robust way to land at the dir's leading space.
 # IMPORTANT: must run BEFORE the separator transform below — that transform
 # inserts a `-\e[49m\e[49m\e[49m` boundary marker which would shadow our
 # extraction anchor on subsequent boundaries.
-raw_dir="$(printf '%s' "$line1" | sed -n "s/^[^A-Za-z0-9_]*\([A-Za-z0-9._-][A-Za-z0-9._ /-]*[A-Za-z0-9._-]\)[[:space:]]*${esc}.*/\1/p" | head -1)"
+raw_dir="$(printf '%s' "$line1" | sed -n "s|.*${esc}\[38[^m]*m \([A-Za-z0-9._/-][A-Za-z0-9._ /-]*[A-Za-z0-9._/-]\) ${esc}.*|\1|p" | head -1)"
 if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
   trunc_dir="$(truncate20 "$raw_dir")"
   # Use | as delimiter — paths can contain slashes.
