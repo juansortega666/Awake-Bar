@@ -82,6 +82,172 @@ while [ "$_d" != "/" ] && [ -n "$_d" ]; do
 done
 unset _d
 
+# ---- git_with_timeout: portable 2s timeout wrapper (CONTEXT.md item 5) ----
+# CONTEXT.md Silent fallback policy locked: "Use `timeout 2 <cmd>` wrapper for
+# all new git commands." Default macOS does not ship GNU `timeout` (would break
+# COMPAT-01), so we implement the same semantics with background pid +
+# watchdog. Returns the wrapped command's exit code, or 137 (SIGKILL) when the
+# watchdog killed it. All stderr suppressed.
+#
+# Usage: git_with_timeout git -C "$cwd" rev-list --count HEAD..@{u}
+git_with_timeout() {
+  local pid watchdog result
+  ( "$@" 2>/dev/null ) &
+  pid=$!
+  ( sleep 2; kill -9 "$pid" 2>/dev/null ) &
+  watchdog=$!
+  wait "$pid" 2>/dev/null
+  result=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$result"
+}
+
+# ---- git state detection (6 states, 4s hot cache + 60s stale fallback) ----
+# Reads behind-count, conflict, detached HEAD, no-upstream+ahead, rebasing, merging
+# in one cached pass. All git commands routed through git_with_timeout (CONTEXT.md
+# Silent fallback policy item 5). Cache layout:
+#   /tmp/gsd-git-<session_id>: behind:N conflict:0|1 detached:SHA|"" no_upstream:0|1 rebasing:0|1 merging:0|1
+# Cache TTL semantics (CONTEXT.md Silent fallback policy items 4-5):
+#   age ≤ 4s            → hot cache, return immediately (no git calls)
+#   age > 4s, fresh ok  → re-query, refresh cache
+#   age > 4s, query fail, age ≤ 60s → reuse stale values (do NOT blank)
+#   age > 60s, query fail OR no cache → return zero-state defaults
+# Populates 6 globals: gs_behind gs_conflict gs_detached gs_no_upstream gs_rebasing gs_merging
+gs_behind=0; gs_conflict=0; gs_detached=""; gs_no_upstream=0; gs_rebasing=0; gs_merging=0
+
+# Parse a cache line into the 6 gs_* globals. Defensive — bad cache won't crash.
+_load_git_cache() {
+  local line="$1"
+  gs_behind="${line#*behind:}"; gs_behind="${gs_behind%% *}"
+  gs_conflict="${line#*conflict:}"; gs_conflict="${gs_conflict%% *}"
+  gs_detached="${line#*detached:}"; gs_detached="${gs_detached%% *}"
+  gs_no_upstream="${line#*no_upstream:}"; gs_no_upstream="${gs_no_upstream%% *}"
+  gs_rebasing="${line#*rebasing:}"; gs_rebasing="${gs_rebasing%% *}"
+  gs_merging="${line#*merging:}"; gs_merging="${gs_merging%% *}"
+  gs_behind="${gs_behind//[^0-9]/}"; [ -z "$gs_behind" ] && gs_behind=0
+  gs_conflict="${gs_conflict//[^01]/}"; [ -z "$gs_conflict" ] && gs_conflict=0
+  gs_no_upstream="${gs_no_upstream//[^01]/}"; [ -z "$gs_no_upstream" ] && gs_no_upstream=0
+  gs_rebasing="${gs_rebasing//[^01]/}"; [ -z "$gs_rebasing" ] && gs_rebasing=0
+  gs_merging="${gs_merging//[^01]/}"; [ -z "$gs_merging" ] && gs_merging=0
+}
+
+# Try a fresh query. Returns 0 on success (gs_* populated), non-zero on failure.
+# Sets the 6 globals from real git state. Locates .git from $cwd.
+_query_git_state() {
+  local gd="" _gd="$cwd"
+  while [ "$_gd" != "/" ] && [ -n "$_gd" ]; do
+    if [ -d "$_gd/.git" ] || [ -f "$_gd/.git" ]; then gd="$_gd/.git"; break; fi
+    _gd="$(dirname "$_gd")"
+  done
+  if [ -z "$gd" ]; then
+    # Not a git repo — zero-state is a successful "query"
+    gs_behind=0; gs_conflict=0; gs_detached=""; gs_no_upstream=0; gs_rebasing=0; gs_merging=0
+    return 0
+  fi
+
+  # Resolve worktree pointer file (.git as file, not dir)
+  if [ -f "$gd" ]; then
+    local gdptr
+    gdptr="$(sed -n 's/^gitdir: //p' "$gd" 2>/dev/null)"
+    [ -n "$gdptr" ] && gd="$gdptr"
+  fi
+
+  # Access check: if .git is a directory but unreadable (e.g. chmod 000), all
+  # subsequent git calls would silently fail and yield false-zero state. Detect
+  # this here and signal query failure so Branch 3 (stale-cache <=60s) can reuse
+  # the prior value instead of clobbering it. `ls` of the dir is the cheapest
+  # portable readability probe (test -r is unreliable on some filesystems).
+  if [ -d "$gd" ] && ! ls "$gd" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  # Reset accumulators
+  gs_behind=0; gs_conflict=0; gs_detached=""; gs_no_upstream=0; gs_rebasing=0; gs_merging=0
+
+  # State 1: detached HEAD — symbolic-ref HEAD non-zero exit = detached
+  if ! git_with_timeout git -C "$cwd" symbolic-ref --quiet HEAD >/dev/null; then
+    gs_detached="$(git_with_timeout git -C "$cwd" rev-parse --short=7 HEAD 2>/dev/null || true)"
+  fi
+
+  # State 2: no-upstream (ahead>0 gate happens at render time in Plan 02)
+  if ! git_with_timeout git -C "$cwd" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null; then
+    gs_no_upstream=1
+  fi
+
+  # State 3: behind count (HEAD..@{u}). Only meaningful with upstream + attached HEAD.
+  if [ "$gs_no_upstream" = "0" ] && [ -z "$gs_detached" ]; then
+    local bc
+    bc="$(git_with_timeout git -C "$cwd" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
+    bc="${bc//[^0-9]/}"; [ -z "$bc" ] && bc=0
+    gs_behind="$bc"
+  fi
+
+  # State 4 & 5: rebasing — .git/rebase-merge/ OR .git/rebase-apply/
+  if [ -d "${gd}/rebase-merge" ] || [ -d "${gd}/rebase-apply" ]; then
+    gs_rebasing=1
+  fi
+
+  # State 6: merging vs conflict — both check MERGE_HEAD; conflict if unmerged files exist
+  if [ -f "${gd}/MERGE_HEAD" ]; then
+    local unmerged
+    unmerged="$(git_with_timeout git -C "$cwd" diff --name-only --diff-filter=U 2>/dev/null | head -1)"
+    if [ -n "$unmerged" ]; then
+      gs_conflict=1
+    else
+      gs_merging=1
+    fi
+  fi
+
+  return 0
+}
+
+# Write current gs_* values to the cache file. Silent on failure.
+_write_git_cache() {
+  local cache="$1"
+  printf 'behind:%s conflict:%s detached:%s no_upstream:%s rebasing:%s merging:%s' \
+    "$gs_behind" "$gs_conflict" "$gs_detached" "$gs_no_upstream" "$gs_rebasing" "$gs_merging" \
+    > "$cache" 2>/dev/null || true
+}
+
+# Main entry: hot cache → fresh query → stale-cache-≤60s fallback → zero-state defaults.
+read_git_state() {
+  local cache="/tmp/gsd-git-${session_id}"
+  local age=999999
+  local cmtime
+  if [ -f "$cache" ]; then
+    cmtime="$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null)"
+    [ -n "$cmtime" ] && age=$(( now_epoch - cmtime ))
+  fi
+
+  # Branch 1: hot cache (≤4s) — skip git entirely
+  if [ "$age" -le 4 ]; then
+    local line
+    line="$(cat "$cache" 2>/dev/null)" && _load_git_cache "$line"
+    return 0
+  fi
+
+  # Branch 2: fresh query (with 2s per-call timeout). On success, refresh cache.
+  if _query_git_state; then
+    _write_git_cache "$cache"
+    return 0
+  fi
+
+  # Branch 3: query failed — use stale cache up to 60s old (CONTEXT.md item 4)
+  if [ -f "$cache" ] && [ "$age" -le 60 ]; then
+    local line
+    line="$(cat "$cache" 2>/dev/null)" && _load_git_cache "$line"
+    return 0
+  fi
+
+  # Branch 4: no usable cache, query failed → zero-state defaults already set
+  # by the top-level declarations. Leave them; do not crash.
+  return 0
+}
+
+# Call once on every render
+read_git_state
+
 # ---- line 1: existing powerline, stdin forwarded untouched ----
 # The powerline call spawns node via npx — too heavy to run on every render once
 # refreshInterval:1 is enabled (it would fire ~60×/min). Cache its RAW output per
