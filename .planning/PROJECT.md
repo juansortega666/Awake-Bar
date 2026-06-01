@@ -31,7 +31,27 @@ Roadmap awareness is the priority. Live awareness (what's running this second) i
 
 ### Active
 
-(None — v1 milestone closed 2026-05-31. Next milestone activates new requirements.)
+Candidates for next milestone (v1.1 — iterative bar refinement). Surfaced from v1 archive and post-ship usage; `/gsd-new-milestone` will refine / drop / merge.
+
+**Now: ambiguity** (user-raised at v1.0 close, 2026-06-01)
+- `Now:` segment doesn't match framework reality across all states. Specifically: idle behavior shows STATE.md `status:` (last-completed action, not current intent), stale-live behavior keeps spinning during 60s+ gaps in subagent events, and unknown stages render raw without warnings. See ambiguity matrix in `statusline-gsd.sh:425-498`.
+- Approach intent: iterate gradually, not as one rewrite.
+
+**Exotic command coverage** (from v1 REQUIREMENTS.md v2 section)
+- **EXOT-01**: Recognize `/gsd-autonomous` runs (autonomous-mode indicator)
+- **EXOT-02**: Recognize `/gsd-workstreams` (active workstream)
+- **EXOT-03**: Recognize `/gsd-new-workspace` (workspace vs main repo)
+- **EXOT-04**: Recognize `/gsd-thread` (active thread)
+
+**Aesthetic layer** (from v1 REQUIREMENTS.md v2 section)
+- **AEST-01**: Optional semantic color-per-stage (currently all stages share green-when-live)
+- **AEST-02**: Alternative palette aligned with consumer project (e.g. TreSur indigo `#5B5FE6`)
+
+**Carry-forward fixes** (from v1.0 MILESTONES.md deferred items)
+- ROADMAP Phase 4 success criterion #5 (6→7 color palette wording)
+- WR-02 bash 10+ regex future-proofing (cosmetic)
+- `phase.complete` SDK CLI overcount bug (M5/4 observed)
+- Framework-side: `/gsd-execute-phase` orchestrator emit `Wave N/M:` Task labels (consumer plumbing dormant without it)
 
 ### Out of Scope
 
