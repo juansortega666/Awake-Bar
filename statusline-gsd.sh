@@ -320,20 +320,23 @@ fi
 # first segment and the line-end use a single \e[49m, so spaces inside a value like
 # "Opus 4.7 (1M context)" stay untouched. $esc was declared in the version-splice
 # block above.
-line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}-${R}${esc}[49m${esc}[49m${esc}[49m/g")"
-
 # ---- 20-char dir-basename truncation (LAYOUT-02) ----
-# The directory is the first non-color text in line1, ending at the first
-# segment boundary (triple \e[49m). Extract it, truncate if >20 chars, splice back.
-# Run AFTER the separator transform so the boundary marker is still intact for the
-# extraction regex (the transform changes \e[49m×3 → \e[49m-\e[49m×3, but the leading
-# raw text before that triple is unchanged).
-raw_dir="$(printf '%s' "$line1" | sed -n "s/^ *\([^${esc}]*\)${esc}\[49m.*/\1/p" | head -1 | sed 's/[[:space:]]*$//')"
+# The directory is the first plain-text run in line1, ending at the first
+# segment boundary. Powerline emits "\e[<color>m DIR \e[0m\e[49m\e[49m\e[49m..."
+# so the dir text is between the LAST `m` of the opening color and the FIRST
+# `\e` of the segment reset. Extract by trimming leading ANSI/space, then
+# capturing chars up to (but not including) the next \e.
+# IMPORTANT: must run BEFORE the separator transform below — that transform
+# inserts a `-\e[49m\e[49m\e[49m` boundary marker which would shadow our
+# extraction anchor on subsequent boundaries.
+raw_dir="$(printf '%s' "$line1" | sed -n "s/^[^A-Za-z0-9_]*\([A-Za-z0-9._-][A-Za-z0-9._ /-]*[A-Za-z0-9._-]\)[[:space:]]*${esc}.*/\1/p" | head -1)"
 if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
   trunc_dir="$(truncate20 "$raw_dir")"
+  # Use | as delimiter — paths can contain slashes.
   line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${trunc_dir}|")"
-  # ^ Use | as delimiter — paths can contain slashes
 fi
+
+line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}-${R}${esc}[49m${esc}[49m${esc}[49m/g")"
 
 # ---- State-aware branch color (COLOR-01) ----
 # Determines the branch color from the gs_* flags populated by read_git_state.
@@ -408,7 +411,90 @@ if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" 
   raw_branch="$(printf '%s' "$line1" | sed -n 's/.*⎇ \([^ ↑↓●'"$esc"']*\).*/\1/p' | head -1)"
   if [ -n "$raw_branch" ] && [ "${#raw_branch}" -gt 20 ]; then
     trunc_branch="$(truncate20 "$raw_branch")"
-    line1="$(printf '%s' "$line1" | sed "s/⎇ ${raw_branch}/⎇ ${trunc_branch}/")"
+    # Use | as delimiter — branch names can contain slashes (feat/foo, fix/bar).
+    line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch}|⎇ ${trunc_branch}|")"
+  fi
+fi
+
+# ---- Trailing-flag accumulation (GIT-01, GIT-04, ROBUST-01) ----
+# Splices ↓N + conflict + no-remote into the git segment, BEFORE its closing
+# \e[0m, in deterministic order (ROBUST-01: no precedence, all applicable
+# flags shown). Skipped entirely for transition states (detached/rebasing/
+# merging) which don't carry these counters.
+#
+# Order built here matches CONTEXT.md "Display rules":
+#   <branch-pos> ↑N ↓N ● conflict no-remote
+# ↑N comes from powerline natively. ↓N is spliced after it when present,
+# OR directly after the branch token when ↑N is absent (behind-only case).
+# Dirty ● is native too. "conflict" and "no-remote" tail-append.
+if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" ]; then
+  # Build the ↓N segment (only when behind>0). Color: ámbar 178 (counters
+  # convention per CONTEXT.md C-03). The trailing space matches powerline's
+  # spacing convention. After the count, restore the branch color+bold so the
+  # rest of the segment (dirty marker, anything before \e[0m) stays styled.
+  behind_seg=""
+  if [ "$gs_behind" -gt 0 ] 2>/dev/null; then
+    behind_seg="${YELc}↓${gs_behind}${R}${branch_color}${B} "
+  fi
+
+  # Build the conflict + no-remote tail. These appear AFTER ● (which is part
+  # of the powerline-native segment). To inject them BEFORE the segment's
+  # closing \e[0m, we splice just before that reset. Order is locked by the
+  # build sequence: conflict first, then no-remote.
+  tail_seg=""
+  if [ "$gs_conflict" = "1" ]; then
+    tail_seg="${tail_seg} ${REDc}${B}conflict${R}"
+  fi
+  if [ "$gs_no_upstream" = "1" ] && [ "$branch_ahead" = "1" ]; then
+    tail_seg="${tail_seg} ${YELc}no-remote${R}"
+  fi
+
+  if [ -n "$behind_seg" ] || [ -n "$tail_seg" ]; then
+    # --- ↓N insertion ---
+    # Path A (ahead+behind common case): splice ↓N immediately after the
+    # powerline-native ↑N digit run. Uses sed because `↑N ` is a stable
+    # pattern with a digit run + trailing space.
+    if [ -n "$behind_seg" ]; then
+      ahead_pre="$line1"
+      line1="$(printf '%s' "$line1" | sed "s/↑\([0-9][0-9]*\) /↑\1 ${behind_seg}/")"
+
+      # Path B (behind-only fallback): if Path A's splice did NOT fire (no
+      # `↑N ` anchor — common when branch is freshly checked out and upstream
+      # advanced), insert ↓N directly after the `⎇ <branch>` token. Detect
+      # "splice did not fire" by string-equality of line1 pre/post Path A.
+      if [ "$line1" = "$ahead_pre" ]; then
+        # behind-only: inject ↓N right after the ⎇-token (first ⎇ <name> run).
+        line1="$(printf '%s' "$line1" | awk -v behind="$behind_seg" -v esc="$esc" '
+          !done && match($0, "⎇ [^ ↑↓●" esc "]+") {
+            t = substr($0, RSTART, RLENGTH)
+            printf "%s%s %s%s\n", substr($0, 1, RSTART - 1), t, behind, substr($0, RSTART + RLENGTH)
+            done = 1
+            next
+          }
+          { print }
+        ')"
+      fi
+    fi
+
+    # --- conflict + no-remote tail-splice ---
+    # tail_seg goes before the first \e[0m on the git-segment line.
+    # The git segment is on line 1 of the multi-line powerline output.
+    # awk approach: on lines containing branch_color, splice tail_seg
+    # immediately before the FIRST \e[0m. `done` guard prevents accidental
+    # splice into line 2 or 3.
+    if [ -n "$tail_seg" ]; then
+      line1="$(printf '%s' "$line1" | awk -v marker="$branch_color" -v reset="${esc}[0m" -v tail="$tail_seg" '
+        !done && index($0, marker) {
+          p = index($0, reset)
+          if (p > 0) {
+            printf "%s%s%s\n", substr($0, 1, p - 1), tail, substr($0, p)
+            done = 1
+            next
+          }
+        }
+        { print }
+      ')"
+    fi
   fi
 fi
 
