@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# v1.1 Ship Gate — Phase 4 D-07..D-10 + D-19 + Phase 5 P5.1..P5.9.
-# Verifies cross-cutting locks before declaring v1.1 shippable.
+# v1.2 Ship Gate — Phase 4 D-07..D-10 + D-19 + Phase 5 P5.1..P5.9 + v1.2 L1..L12.
+# Verifies cross-cutting locks before declaring v1.2 shippable.
 #   D-07: Smoke test against TreSur STATE.md (no formal test suite)
 #   D-08: PERF lock — <150ms/render p99 (60 sequential renders <9s, with 1 warm-up)
 #   D-09: PALETTE lock — exact 7-color set
@@ -13,8 +13,21 @@
 #         no-remote/rebasing/merging text labels, state-aware branch coloring
 #         (green/ámbar/rojo bold), 20-char truncation, multi-flag order,
 #         silent-fallback contract, cache TTL.
+#   P6.1..P6.6 (v1.1 Phase 6): Block segment format + zone color + silent fallback.
+#         (Updated at v1.2: §-glyph dropped; block now renders as `N% used ↻ Nh`.)
+#   L1..L12 (v1.2):  4-line indented reflow + weekly segment + SPLICE-01 fix +
+#         Memory label removal + glyph drops. See DISCUSS §5.
 #
-# Output: a single line "v1.1 SHIP GATE: PASS" or "v1.1 SHIP GATE: FAIL — <reason>"
+# v1.2 layout note for line-number assertions:
+#   Output line 1: title `✳ Context Management`
+#   Output line 2: model row     ← was "powerline content line A" pre-v1.2
+#   Output line 3: dir/V/git row ← was "powerline content line B" pre-v1.2
+#   Output line 4: block+ctxseg row (or ctxseg standalone)
+#   Output line 5: weekly row (if Max-plan + weekly seeded)
+# Inherited P5.x tests that previously asserted `sed -n '2p'` for git-state SGRs
+# now use `sed -n '3p'` (the dir/V/git row moved from output line 2 to line 3).
+#
+# Output: a single line "v1.2 SHIP GATE: PASS" or "v1.2 SHIP GATE: FAIL — <reason>"
 # Exit code: 0 on PASS, 1 on FAIL.
 
 set -uo pipefail
@@ -24,7 +37,7 @@ STATUS="${REPO}/statusline-gsd.sh"
 TRESUR_STATE="/Users/tresur/Documents/TreSure-Hope-Lite/.planning/STATE.md"
 
 fail() {
-  printf 'v1.1 SHIP GATE: FAIL — %s\n' "$1"
+  printf 'v1.2 SHIP GATE: FAIL — %s\n' "$1"
   exit 1
 }
 
@@ -102,6 +115,36 @@ p6_seed_powerline() {
     else
       printf '%s✱ Claude %s%s\n' $'\033[38;5;111m' $'\033[0m' $'\033[49m'
     fi
+  } > "/tmp/gsd-powerline-${sid}"
+  touch "/tmp/gsd-powerline-${sid}"
+}
+
+# ---- v1.2 fixture helper: p7_seed_powerline ----
+# Extends p6_seed_powerline to also seed the WEEKLY segment (◑ N% (Xd Yh)) on
+# physical line 2. When the 4th arg is empty, weekly is omitted — simulates Pro
+# plan (block only / no weekly) or no-data cases.
+#
+# Usage: p7_seed_powerline <sid> "<git-segment>" "<block-shape-or-empty>" "<weekly-shape-or-empty>"
+# Examples:
+#   p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"   # Max plan, full
+#   p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""               # Pro plan / no weekly
+#   p7_seed_powerline "$sid" "⎇ test-branch ●" "" ""                           # no rate_limits
+p7_seed_powerline() {
+  local sid="$1" gitseg="$2" block="${3:-}" weekly="${4:-}"
+  {
+    printf '%s %s%s%s\n' $'\033[38;2;135;215;135m' "$gitseg" $'\033[0m' $'\033[49m'
+    # Build physical line 2 (model + optional block + optional weekly) using the
+    # same single-bg-reset-between-segments shape powerline emits at v1.2.
+    line_b="$(printf '%s✱ Claude %s%s' $'\033[38;5;111m' $'\033[0m' $'\033[49m')"
+    if [ -n "$block" ]; then
+      line_b="${line_b}$(printf '%s%s%s%s%s◱ %s%s%s' \
+        $'\033[49m' $'\033[49m' $'\033[38;5;111m' "" "" "$block" $'\033[0m' $'\033[49m')"
+    fi
+    if [ -n "$weekly" ]; then
+      line_b="${line_b}$(printf '%s%s%s%s%s◑ %s%s%s' \
+        $'\033[49m' $'\033[49m' $'\033[38;5;111m' "" "" "$weekly" $'\033[0m' $'\033[49m')"
+    fi
+    printf '%s\n' "$line_b"
   } > "/tmp/gsd-powerline-${sid}"
   touch "/tmp/gsd-powerline-${sid}"
 }
@@ -232,7 +275,7 @@ out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE '↑3 ↓2' || \
   fail "P5.1: ↓2 not spliced after ↑3 (cache behind:2 + powerline ↑3): $(printf '%s' "$out" | head -c 400)"
 # Powerline (line 2 of bar; line 1 is the Context Management title) must carry ámbar 178 for ↓N.
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.1: ámbar 178 SGR not on powerline line (↓N should be colored ámbar): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -251,12 +294,12 @@ echo "$out" | strip_ansi | grep -qE '↓2' || \
   fail "P5.1b: ↓2 not present after Path B fallback (cache behind:2 + powerline without ↑N): $(printf '%s' "$out" | head -c 400)"
 # ↓2 should appear after the branch token, before (or at) the dirty marker.
 # Powerline is on line 2 of the bar output (line 1 is the Context Management title).
-stripped_p51b="$(echo "$out" | strip_ansi | sed -n '2p')"
+stripped_p51b="$(echo "$out" | strip_ansi | sed -n '3p')"
 pos_dn_b="$(printf '%s' "$stripped_p51b" | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
 pos_branch_b="$(printf '%s' "$stripped_p51b" | grep -bE -o 'test-branch' | head -1 | cut -d: -f1)"
 [ -n "$pos_branch_b" ] && [ -n "$pos_dn_b" ] && [ "$pos_branch_b" -lt "$pos_dn_b" ] || \
   fail "P5.1b: ↓2 (pos $pos_dn_b) does not appear after test-branch (pos $pos_branch_b) — Path B splice anchored wrong: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.1b: ámbar 178 SGR not on powerline line for behind-only case: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -270,7 +313,7 @@ out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'conflict' || \
   fail "P5.2: 'conflict' text not in output (cache conflict:1 set + powerline pre-seeded): $(printf '%s' "$out" | head -c 400)"
 # Branch should turn rojo 203 on the powerline line (line 2 of bar output).
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;203m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;203m' || \
   fail "P5.2: rojo 203 SGR not on powerline line (branch should turn rojo on conflict): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -286,9 +329,9 @@ out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'detached d39c2a1' || \
   fail "P5.3: 'detached d39c2a1' not in output (cache detached + powerline ⎇-token seeded): $(printf '%s' "$out" | head -c 400)"
 # ⎇ branch icon should be GONE on the powerline line (line 2) — replaced by 'detached <sha>'.
-echo "$out" | strip_ansi | sed -n '2p' | grep -qE '⎇ ' && \
+echo "$out" | strip_ansi | sed -n '3p' | grep -qE '⎇ ' && \
   fail "P5.3: ⎇-token still present after detached splice — branch-token replacement did not fire: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;203m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;203m' || \
   fail "P5.3: rojo 203 not on powerline line (detached should render in rojo bold): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -300,7 +343,7 @@ p5_seed_powerline "$sid" "⎇ test-branch ↑3 ●"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'no-remote' || \
   fail "P5.4a: 'no-remote' not in output (no_upstream:1 + ↑3 seeded): $(printf '%s' "$out" | head -c 400)"
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.4a: ámbar 178 not on powerline line (branch should turn ámbar on no-remote+ahead): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -322,7 +365,7 @@ p5_seed_powerline "$sid" "⎇ test-branch"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'rebasing' || \
   fail "P5.5a: 'rebasing' not in output: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.5a: ámbar 178 not on powerline line (rebasing should be ámbar bold): $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -334,7 +377,7 @@ p5_seed_powerline "$sid" "⎇ test-branch"
 out="$(p5_render "$sid" "$fix")"
 echo "$out" | strip_ansi | grep -qE 'merging' || \
   fail "P5.5b: 'merging' not in output: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | sed -n '2p' | grep -qE $'\033\\[38;5;178m' || \
+echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.5b: ámbar 178 not on powerline line: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -408,10 +451,10 @@ echo "$stripped" | grep -qE 'conflict'  || fail "P5.7: 'conflict' missing in wor
 echo "$stripped" | grep -qE 'no-remote' || fail "P5.7: 'no-remote' missing in worst-case output: $(printf '%s' "$out" | head -c 400)"
 # Order check: ↑3 must precede ↓2 must precede conflict must precede no-remote.
 # Powerline is on line 2 of bar output (line 1 is Context Management title).
-pos_up="$(echo "$stripped" | sed -n '2p' | grep -bE -o '↑3' | head -1 | cut -d: -f1)"
-pos_dn="$(echo "$stripped" | sed -n '2p' | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
-pos_cf="$(echo "$stripped" | sed -n '2p' | grep -bE -o 'conflict' | head -1 | cut -d: -f1)"
-pos_nr="$(echo "$stripped" | sed -n '2p' | grep -bE -o 'no-remote' | head -1 | cut -d: -f1)"
+pos_up="$(echo "$stripped" | sed -n '3p' | grep -bE -o '↑3' | head -1 | cut -d: -f1)"
+pos_dn="$(echo "$stripped" | sed -n '3p' | grep -bE -o '↓2' | head -1 | cut -d: -f1)"
+pos_cf="$(echo "$stripped" | sed -n '3p' | grep -bE -o 'conflict' | head -1 | cut -d: -f1)"
+pos_nr="$(echo "$stripped" | sed -n '3p' | grep -bE -o 'no-remote' | head -1 | cut -d: -f1)"
 [ -n "$pos_up" ] && [ -n "$pos_dn" ] && [ "$pos_up" -lt "$pos_dn" ] || \
   fail "P5.7: ↑3 (pos $pos_up) does not precede ↓2 (pos $pos_dn) — ROBUST-01 order violated: $(printf '%s' "$out" | head -c 400)"
 [ -n "$pos_dn" ] && [ -n "$pos_cf" ] && [ "$pos_dn" -lt "$pos_cf" ] || \
@@ -494,23 +537,26 @@ rm -f "/tmp/gsd-cmd-${w3sid}" "/tmp/gsd-live-${w3sid}" "/tmp/gsd-wave-${w3sid}" 
 # Locks the v1.1 quota/layout contract under permanent regression coverage.
 # Every P6.x test would FAIL against the pre-Phase-6 baseline (per Plan 06-03 spec).
 
-# ---- P6.1 — Block segment format (QUOTA-01) ----
-# Asserts powerline's `◱ N% (Xh Ym)` is transformed into our spec format
-# `§ N% used ↻ Nh` (or `↻ Nm` when reset <1h). Two sub-fixtures: ≥1h and <1h.
+# ---- P6.1 — Block segment format (QUOTA-01, v1.2 G2-03 update) ----
+# Asserts powerline's `◱ N% (Xh Ym)` is transformed into the v1.2 spec format
+# `N% used ↻ Nh` (or `↻ Nm` when reset <1h). The `§` glyph was DROPPED at v1.2
+# (G2-03) — the block segment now starts directly with the percentage.
+# Two sub-fixtures: ≥1h and <1h.
 sid="p6-1-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p6_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)"
 out="$(p5_render "$sid" "$fix" | strip_ansi)"
-echo "$out" | grep -qE '§ 25% used ↻ 4h' || fail "P6.1a (≥1h reset): expected '§ 25% used ↻ 4h' in output, got: $(printf '%s' "$out" | head -c 400)"
-echo "$out" | grep -qE '◱' && fail "P6.1a: native powerline ◱ icon leaked into output (should be replaced by §)"
+echo "$out" | grep -qE '25% used ↻ 4h' || fail "P6.1a (≥1h reset): expected '25% used ↻ 4h' in output, got: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | grep -qE '◱' && fail "P6.1a: native powerline ◱ icon leaked into output (should be stripped)"
 echo "$out" | grep -qE '\(4h 12m\)' && fail "P6.1a: native powerline paren format leaked into output"
+echo "$out" | grep -qE '§' && fail "P6.1a: legacy § glyph leaked into output (G2-03 dropped it at v1.2)"
 p5_cleanup "$sid"
 
 sid="p6-1b-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p6_seed_powerline "$sid" "⎇ test-branch ●" "87% (0h 47m)"
 out="$(p5_render "$sid" "$fix" | strip_ansi)"
-echo "$out" | grep -qE '§ 87% used ↻ 47m' || fail "P6.1b (<1h reset): expected '§ 87% used ↻ 47m', got: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | grep -qE '87% used ↻ 47m' || fail "P6.1b (<1h reset): expected '87% used ↻ 47m', got: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P6.2 — Current session % zone color (COLOR-02) ----
@@ -589,7 +635,9 @@ zc_calls="$(grep -cE 'zone_color "?\$(ctxpct|block_pct)"?' "$STATUS")"
 
 # ---- P6.6 — Silent fallback when block segment is absent (ROBUST-02 inheritance) ----
 # When powerline omits the block segment (non-Pro user / rate_limits hook unavailable),
-# the bar must continue rendering Model + Memory gauge with no `§ ... used ↻` leak.
+# the bar must continue rendering Model + Memory gauge with no `% used ↻` leak.
+# v1.2 update: anchor changed from `§ <pct>% used ↻` to `<pct>% used ↻` since
+# the `§` glyph was dropped at v1.2 (G2-03).
 sid="p6-6-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p6_seed_powerline "$sid" "⎇ test-branch ●" ""   # empty 3rd arg → no block segment
@@ -597,13 +645,283 @@ out="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_wind
 exit_code=$?
 [ "$exit_code" = "0" ] || fail "P6.6: bar exited ${exit_code} when block segment absent (silent-fallback contract requires exit 0)"
 stripped="$(printf '%s' "$out" | strip_ansi)"
-# No `§ <digits>% used ↻` substring should appear — the block splice silently no-oped.
-echo "$stripped" | grep -qE '§ *[0-9]+% used ↻' && fail "P6.6: §-segment leaked into output despite missing block segment — silent fallback broken: $(printf '%s' "$stripped" | head -c 400)"
+# No `<digits>% used ↻` substring should appear — the block extraction yielded
+# empty $blockseg and the v1.2 reflow renders row 3 as ctxseg only (no `↻`).
+echo "$stripped" | grep -qE '[0-9]+% used ↻' && fail "P6.6: block-segment leaked into output despite missing block data — silent fallback broken: $(printf '%s' "$stripped" | head -c 400)"
+# Also guard against legacy `§` leak (regression guard for G2-03).
+echo "$stripped" | grep -qE '§' && fail "P6.6: legacy § glyph leaked despite v1.2 G2-03 drop"
 # Memory gauge STILL appears (it doesn't depend on the block segment).
-# v1.1 polish (UAT 2026-06-01): gauge dropped its `used` suffix — just `N%` now.
-# Assert the gauge fragment exists (bar + N%), not the obsolete `% used` label.
 echo "$stripped" | grep -qE '▓.*[0-9]+%' || fail "P6.6: Memory gauge missing when block segment absent — fallback broke the gauge: $(printf '%s' "$stripped" | head -c 400)"
 p5_cleanup "$sid"
+
+# ============================================================================
+# v1.2: Layout redesign + weekly + SPLICE-01 + Memory label (L1..L12)
+# ============================================================================
+# v1.2 DISCUSS §5 spec. Tests use p7_seed_powerline (block + weekly fixtures).
+# Reflow output layout reference (in lines of OUTPUT):
+#   L1 → title "✳ Context Management"
+#   L2 → model row    ("    Claude" — 3-space indent + reset SGR carries indent)
+#   L3 → dir/V/git row
+#   L4 → block + ctxseg row  (or ctxseg standalone when block absent)
+#   L5 → weekly row (Max plan only; omitted when seven_day data absent)
+#   L6 → SP spacer
+
+# ---- L1: bar renders 5 lines (title + 4 content) when weekly seeded;
+#          4 lines (title + 3 content) when weekly absent ----
+sid="v12-l1-max-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Count non-empty content rows of the Context Management block.
+# Output up to (but not including) the SP spacer / GSD block: model + dir/git + block+gauge + weekly = 4.
+# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
+# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
+ctx_rows="$(printf '%s\n' "$out" | awk '
+  /^✳ Context Management/ { seen=1; next }
+  seen && /^◎ GSD Status/  { exit }
+  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
+  END { print n+0 }
+')"
+# Title is line 1; we expect 4 content lines AFTER the title.
+[ "$ctx_rows" = "4" ] || fail "L1 (Max plan, weekly seeded): expected exactly 4 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+sid="v12-l1-pro-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""   # Pro plan: weekly absent
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
+# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
+ctx_rows="$(printf '%s\n' "$out" | awk '
+  /^✳ Context Management/ { seen=1; next }
+  seen && /^◎ GSD Status/  { exit }
+  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
+  END { print n+0 }
+')"
+[ "$ctx_rows" = "3" ] || fail "L1 (Pro plan, weekly absent): expected exactly 3 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- L2: content rows start with reset-SGR + 3 literal spaces (3-space indent);
+#          title sits at col 0 (no leading SGR-then-3-spaces pattern) ----
+sid="v12-l2-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
+out_raw="$(p5_render "$sid" "$fix")"
+# Each content row begins with \e[0m then 3 spaces. Anchor on the literal `\e[0m   ` (reset + 3 spaces).
+# Count occurrences — expect at least 4 (4 content rows when weekly present).
+indent_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m   ')"
+[ "$indent_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of reset+3-space indent (one per content row), got ${indent_count}: $(printf '%s' "$out_raw" | head -c 600)"
+# Title line must NOT begin with the 3-space indent (it sits at col 0).
+title_line="$(printf '%s' "$out_raw" | sed -n '1p')"
+case "$title_line" in
+  *$'\033[0m   '*) fail "L2: title line has 3-space indent (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
+esac
+p5_cleanup "$sid"
+
+# ---- L3: line 1 (model row) contains a model name, with NO leading `✱` ----
+sid="v12-l3-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Output line 2 = model row (line 1 is title). Must contain "Claude" (the seeded model name).
+model_row="$(printf '%s' "$out" | sed -n '2p')"
+echo "$model_row" | grep -qE 'Claude' || fail "L3: model row missing 'Claude': $(printf '%s' "$model_row" | head -c 200)"
+# Must NOT contain a leading `✱` glyph (G2-02 drops it).
+echo "$model_row" | grep -qE '✱' && fail "L3: leading ✱ glyph still present on model row (G2-02 should strip it): $(printf '%s' "$model_row" | head -c 200)"
+p5_cleanup "$sid"
+
+# ---- L4: line 2 (dir/V/git row) contains dir, V<ver>, ⎇ <branch> in order ----
+# Uses TreSur (real package.json with .version) to confirm SPLICE-01 fix works on
+# both warm (cache present) AND cold (no cache) paths.
+v12sid_a="v12-l4-warm-$$"
+rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}"
+# Warm scenario — pre-seed the powerline cache so the dir-basename anchor is exercised
+# on already-cached output (the SPLICE-01 case that v1.1 silently broke).
+{
+  printf '%s TreSure-Hope-Lite %s%s%s%s%s ⎇ backlog-org-board ↑6 ●%s%s\n' \
+    $'\033[38;2;208;208;208m' $'\033[0m' $'\033[49m' $'\033[49m' $'\033[49m' \
+    $'\033[38;2;135;215;135m' $'\033[0m' $'\033[49m'
+  printf '%s✱ Claude %s%s\n' $'\033[38;5;111m' $'\033[0m' $'\033[49m'
+} > "/tmp/gsd-powerline-${v12sid_a}"
+touch "/tmp/gsd-powerline-${v12sid_a}"
+printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"}}' "$v12sid_a" > "/tmp/${v12sid_a}-input.json"
+v12_out_a="$(bash "$STATUS" < "/tmp/${v12sid_a}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
+trspkgver="$(jq -r '.version // empty' /Users/tresur/Documents/TreSure-Hope-Lite/package.json 2>/dev/null)"
+dirgit_row="$(printf '%s' "$v12_out_a" | sed -n '3p')"
+# Order check: TreSure-Hope-Lite ... V<ver> ... ⎇
+pos_dir="$(printf '%s' "$dirgit_row" | grep -bE -o 'TreSure-Hope-Lite' | head -1 | cut -d: -f1)"
+pos_ver="$(printf '%s' "$dirgit_row" | grep -bE -o "V${trspkgver}" | head -1 | cut -d: -f1)"
+pos_glyph="$(printf '%s' "$dirgit_row" | grep -bE -o '⎇' | head -1 | cut -d: -f1)"
+[ -n "$pos_dir" ] && [ -n "$pos_ver" ] && [ -n "$pos_glyph" ] || \
+  fail "L4 (warm): dir/V/⎇ missing from dir-git row — SPLICE-01 broken on warm path: $(printf '%s' "$dirgit_row" | head -c 400)"
+[ "$pos_dir" -lt "$pos_ver" ] && [ "$pos_ver" -lt "$pos_glyph" ] || \
+  fail "L4 (warm): dir(${pos_dir}) → V(${pos_ver}) → ⎇(${pos_glyph}) order violated: $(printf '%s' "$dirgit_row" | head -c 400)"
+rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}" "/tmp/${v12sid_a}-input.json"
+
+# ---- L5: line 3 (block + ctxseg row) starts with `N% used ↻` (no leading `§`)
+#          and contains ` · ▓` (the Memory gauge with at least one filled cell
+#          after the `·` separator) — needs ctxpct > 0 so gauge has filled cells ----
+sid="v12-l5-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""
+out="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":15,"remaining_percentage":85}}' "$sid" "$fix" | bash "$STATUS" 2>&1 | strip_ansi)"
+# Output line 4 = block + ctxseg row (line 1 title / line 2 model / line 3 dir / line 4 block+gauge).
+block_row="$(printf '%s' "$out" | sed -n '4p')"
+echo "$block_row" | grep -qE '^[[:space:]]+[0-9]+% used ↻' || \
+  fail "L5: block row does not start with '<pct>% used ↻': $(printf '%s' "$block_row" | head -c 200)"
+echo "$block_row" | grep -qE '§' && fail "L5: legacy § glyph leaked into block row: $(printf '%s' "$block_row" | head -c 200)"
+echo "$block_row" | grep -qE '· ▓' || fail "L5: ' · ▓' (separator + gauge filled cell) missing from block row: $(printf '%s' "$block_row" | head -c 200)"
+p5_cleanup "$sid"
+
+# ---- L6: Memory gauge has NO 'Memory' label and NO 'used' adjacent to the bar ----
+sid="v12-l6-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+block_row="$(printf '%s' "$out" | sed -n '4p')"
+echo "$block_row" | grep -qE 'Memory' && fail "L6: 'Memory' label leaked into block row: $(printf '%s' "$block_row" | head -c 200)"
+# After the gauge bar (▓░...░ N%) there must be NO trailing 'used' — only the percentage.
+# Pattern: the substring " <gauge> N% used" (i.e. 'used' immediately after the gauge %) must NOT appear.
+echo "$block_row" | grep -qE '▓[░▓]+[[:space:]]+[0-9]+%[[:space:]]+used' && \
+  fail "L6: 'used' leaked adjacent to gauge bar in block row (G2-06 spec: bar IS the metric, no label): $(printf '%s' "$block_row" | head -c 200)"
+p5_cleanup "$sid"
+
+# ---- L7: line 4 (weekly row) format `<pct>% used ↻ <Nd Nh>` when weekly seeded
+#          with ≥1d remaining ----
+sid="v12-l7-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Output line 5 = weekly row when all segments present.
+weekly_row="$(printf '%s' "$out" | sed -n '5p')"
+echo "$weekly_row" | grep -qE '47% used ↻ 4d 3h' || \
+  fail "L7: weekly row missing expected '47% used ↻ 4d 3h' format: $(printf '%s' "$weekly_row" | head -c 200)"
+echo "$weekly_row" | grep -qE '⊞' && fail "L7: legacy ⊞ glyph leaked into weekly row (G2-04 drops it)"
+p5_cleanup "$sid"
+
+# ---- L8: line 4 absent when weekly segment empty (Pro plan / no seven_day data) ----
+sid="v12-l8-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""   # weekly absent
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Line 5 (where weekly would sit) should be empty / belong to spacer / GSD block.
+# Easier assertion: count content rows under "✳ Context Management" until "◎ GSD Status".
+# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
+# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
+ctx_rows="$(printf '%s\n' "$out" | awk '
+  /^✳ Context Management/ { seen=1; next }
+  seen && /^◎ GSD Status/  { exit }
+  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
+  END { print n+0 }
+')"
+[ "$ctx_rows" = "3" ] || fail "L8: expected 3 content rows when weekly absent (model + dir/git + block+gauge), got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- L9: all 3 percentages obey 3-zone color rule (green 0-33, amber 34-66, red 67+) ----
+# Sub-fixture A: all three percentages in zone 1 (green / LG-252).
+sid="v12-l9green-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "22% (4h 0m)" "22% (4d 3h)"
+out_raw="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":22,"remaining_percentage":78}}' "$sid" "$fix" | bash "$STATUS" 2>&1)"
+# Block 22% LG: \e[38;5;252m22%
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;252m22%' || \
+  fail "L9 (green/block): 22% not wrapped in LG (252) SGR — got: $(printf '%s' "$out_raw" | head -c 600)"
+# Weekly 22% LG (a second occurrence of the same SGR+22% on the weekly row)
+weekly22_count="$(printf '%s' "$out_raw" | grep -oE $'\033\\[38;5;252m22%' | wc -l | tr -d ' ')"
+[ "$weekly22_count" -ge "2" ] || \
+  fail "L9 (green/weekly): expected ≥2 LG-wrapped 22% (block + weekly), got ${weekly22_count}: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# Sub-fixture B: all three in zone 2 (amber / YELc-178)
+sid="v12-l9yellow-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "51% (2h 30m)" "51% (3d 1h)"
+out_raw="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":51,"remaining_percentage":49}}' "$sid" "$fix" | bash "$STATUS" 2>&1)"
+yel51_count="$(printf '%s' "$out_raw" | grep -oE $'\033\\[38;5;178m51%' | wc -l | tr -d ' ')"
+[ "$yel51_count" -ge "2" ] || \
+  fail "L9 (ámbar): expected ≥2 YELc-wrapped 51% (block + weekly), got ${yel51_count}: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# Sub-fixture C: all three in zone 3 (red bold / B+REDc-203)
+sid="v12-l9red-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "84% (1h 0m)" "84% (2d 5h)"
+out_raw="$(printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":84,"remaining_percentage":16}}' "$sid" "$fix" | bash "$STATUS" 2>&1)"
+red84_count="$(printf '%s' "$out_raw" | grep -oE $'\033\\[1m\033\\[38;5;203m84%' | wc -l | tr -d ' ')"
+[ "$red84_count" -ge "2" ] || \
+  fail "L9 (rojo): expected ≥2 B+REDc-wrapped 84% (block + weekly), got ${red84_count}: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# ---- L10: all countdowns (↻ Nh / ↻ Nd Nh) stay LG regardless of zone ----
+# Seed with red-zone percentages so countdown coloring is most likely to drift.
+sid="v12-l10-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "84% (1h 0m)" "84% (4d 3h)"
+out_raw="$(p5_render "$sid" "$fix")"
+# Every `↻` rendered in the bar must be preceded by the LG (252) SGR.
+total_arrows="$(printf '%s' "$out_raw" | grep -oE '↻' | wc -l | tr -d ' ')"
+lg_arrows="$(printf '%s' "$out_raw" | grep -oE $'\033\\[38;5;252m↻' | wc -l | tr -d ' ')"
+[ "$total_arrows" -ge "2" ] || \
+  fail "L10: expected ≥2 ↻ countdowns (block + weekly), got ${total_arrows}: $(printf '%s' "$out_raw" | head -c 600)"
+[ "$lg_arrows" = "$total_arrows" ] || \
+  fail "L10: ${lg_arrows}/${total_arrows} ↻ countdowns wrapped in LG (252) SGR — countdown coloring drifted from F2-07: $(printf '%s' "$out_raw" | head -c 600)"
+p5_cleanup "$sid"
+
+# ---- L11: all git glyphs retained: ⎇ ↑N ↓N ● + state words ----
+# Synthesize each git state in isolation, confirm post-reflow it still shows.
+# Reuses Phase 5 fixtures — just asserts NEW layout doesn't lose them.
+sid="v12-l11-flags-$$"
+fix="$(p5_fixture "$sid" "behind:2 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ↑3 ●" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+for glyph in "⎇" "↑3" "↓2" "●"; do
+  printf '%s' "$out" | grep -qF -- "$glyph" || \
+    fail "L11: git glyph '$glyph' missing from reflow output: $(printf '%s' "$out" | head -c 400)"
+done
+p5_cleanup "$sid"
+
+# State words — conflict
+sid="v12-l11-conflict-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:1 detached: no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ●" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'conflict' || fail "L11: 'conflict' state word lost in reflow: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# State words — detached
+sid="v12-l11-detached-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached:abc1234 no_upstream:0 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'detached abc1234' || fail "L11: 'detached <sha>' state word lost in reflow: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# State words — no-remote
+sid="v12-l11-noremote-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:1 rebasing:0 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch ↑3 ●" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'no-remote' || fail "L11: 'no-remote' state word lost in reflow: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# State words — rebasing
+sid="v12-l11-rebasing-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:1 merging:0")"
+p7_seed_powerline "$sid" "⎇ test-branch" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'rebasing' || fail "L11: 'rebasing' state word lost in reflow: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# State words — merging
+sid="v12-l11-merging-$$"
+fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:1")"
+p7_seed_powerline "$sid" "⎇ test-branch" "" ""
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'merging' || fail "L11: 'merging' state word lost in reflow: $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# L12: no-regression check. The full chain above (P5.x + P6.x) passing this point
+# is itself L12 — no separate test fixture required.
 
 # ---- D-08: PERF lock — per-render time budget ----
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
@@ -656,5 +974,5 @@ rm -f "$perf_samples_file"
 # Cleanup
 rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}" "/tmp/${testsid}-input.json"
 
-printf 'v1.1 SHIP GATE: PASS\n'
+printf 'v1.2 SHIP GATE: PASS\n'
 exit 0

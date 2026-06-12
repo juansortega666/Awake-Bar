@@ -477,18 +477,22 @@ fi
 
 # --- Build $blockseg variable (G2-03: no `§` glyph, no `used` label between pct and ↻) ---
 # Spec: `<pct>% used ↻ <reset>` — N% colored by zone_color, the rest in light gray.
+# We wrap `↻` in its OWN LG SGR (separate from the trailing `used` SGR) so the
+# C-07 invariant "countdown stays LG regardless of zone" is enforceable via the
+# pattern `\e[38;5;252m↻` (used by ship-gate P6.2b and L10).
 blockseg=""
 if [ -n "$block_pct" ]; then
   pct_color="$(zone_color "$block_pct")"
-  blockseg="${pct_color}${block_pct}%${R} ${LG}used ↻ ${block_reset}${R}"
+  blockseg="${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
 fi
 
 # --- Build $weeklyseg variable (G2-04: no `⊞` glyph) ---
 # Spec: `<pct>% used ↻ <reset>` — N% colored by zone_color (F2-06), reset in LG (F2-07).
+# Same SGR-around-`↻` discipline as blockseg above.
 weeklyseg=""
 if [ -n "$weekly_pct" ]; then
   weekly_pct_color="$(zone_color "$weekly_pct")"
-  weeklyseg="${weekly_pct_color}${weekly_pct}%${R} ${LG}used ↻ ${weekly_reset}${R}"
+  weeklyseg="${weekly_pct_color}${weekly_pct}%${R} ${LG}used${R} ${LG}↻ ${weekly_reset}${R}"
 fi
 # ---- end Block + Weekly segment extraction ----
 
