@@ -791,35 +791,36 @@ ctxseg="$ctxseg_full"
 emit_context_block() {
   # Title at col 0 (bold white)
   title "✳ Context Management"
-  # Claude Code's renderer collapses runs of ASCII spaces between SGR codes
-  # down to one — rows 1+2 only kept their visible indent because powerline
-  # embeds its own leading space inside its SGR envelope; ours collapsed.
-  # Two-pronged fix:
-  #   1. Row 1 leads with the `⎿` connector glyph (DG color) so the title
-  #      visually flows into the first content line.
-  #   2. Rows 2-4 use NBSP (U+00A0) for the indent — non-breaking space is NOT
-  #      ASCII whitespace, so Claude Code does not collapse it.
-  # Width: `⎿ ` (1 glyph + 1 space) = 2 chars wide; matches 2 NBSPs on the
-  # other rows, so every content row's text starts at column 2.
-  local NBSP=$'\xc2\xa0'
-  local GAP="${NBSP}${NBSP}"
+  # Claude Code's renderer collapses leading whitespace that sits between two
+  # SGR codes of the SAME state — even NBSPs. Whitespace SURVIVES only when
+  # a visible character sits at column 0 (no leading-trim zone) or when an
+  # SGR-state change interrupts the whitespace run. Plain `\e[LG]   \e[LG]X`
+  # collapses to `X`; `\e[LG]   \e[0m\e[<other>] X` keeps the spaces.
+  #
+  # Bulletproof fix: put a real visible glyph at column 0 of every content
+  # row. Row 1 gets `⎿` (the title→content connector). Rows 2-4 get `│` as
+  # tree-continuation indicators. Both DG-colored so the structure is quiet.
+  #
+  # Powerline rows (model + dir) embed their own leading space inside a
+  # multi-SGR envelope — we strip that space so every row's content lands at
+  # column 2 regardless of producer.
+  local ESC=$'\033'
+  local model_clean line_a
+  model_clean="$(printf '%s' "$model_text" | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
+  line_a="$(printf '%s' "$line1" | sed -n '1p' | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
   # Row 1: ⎿ + model
-  printf '%s%s⎿ %s%s\n' "$R" "$DG" "$LG" "$model_text"
-  # Row 2: dir + V + git (physical line 1 of $line1, post-SPLICE-01 + post-transforms below)
-  local line_a
-  line_a="$(printf '%s' "$line1" | sed -n '1p')"
-  printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$line_a"
-  # Row 3: block + ctxseg_full, or ctxseg_standalone alone when block absent. The
-  # `·` separator only appears BETWEEN block and gauge — when block is absent the
-  # row starts directly with the gauge bar.
+  printf '%s%s⎿ %s%s\n' "$R" "$DG" "$LG" "$model_clean"
+  # Row 2: │ + dir + V + git (powerline output, leading space stripped above)
+  printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$line_a"
+  # Row 3: │ + block + ctxseg_full, or │ + ctxseg_standalone when block absent
   if [ -n "$blockseg" ]; then
-    printf '%s%s%s%s %s\n' "$R" "$LG" "$GAP" "$blockseg" "$ctxseg_full"
+    printf '%s%s│ %s%s %s\n' "$R" "$DG" "$LG" "$blockseg" "$ctxseg_full"
   else
-    printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$ctxseg_standalone"
+    printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$ctxseg_standalone"
   fi
-  # Row 4: weekly (silent fallback when empty — row omitted)
+  # Row 4: │ + weekly (silent fallback when empty — row omitted)
   if [ -n "$weeklyseg" ]; then
-    printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$weeklyseg"
+    printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$weeklyseg"
   fi
 }
 
