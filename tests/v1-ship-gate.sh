@@ -152,6 +152,17 @@ p7_seed_powerline() {
 # Strip ANSI escapes for text assertions.
 strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
+# Count non-empty content rows under "✳ Context Management" until "◎ GSD Status"
+# (or EOF). Skips empty lines AND the U+200B zero-width-space spacer.
+count_ctx_rows() {
+  printf '%s\n' "$1" | awk '
+    /^✳ Context Management/ { seen=1; next }
+    seen && /^◎ GSD Status/  { exit }
+    seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
+    END { print n+0 }
+  '
+}
+
 # ---- D-10: COMPAT lock — bash 3.2+ on macOS ----
 bver="$(bash --version 2>/dev/null | head -1)"
 echo "$bver" | grep -qE 'version (3\.2|[4-9])' || fail "bash version not 3.2+: $bver"
@@ -672,16 +683,7 @@ sid="v12-l1-max-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
 out="$(p5_render "$sid" "$fix" | strip_ansi)"
-# Count non-empty content rows of the Context Management block.
-# Output up to (but not including) the SP spacer / GSD block: model + dir/git + block+gauge + weekly = 4.
-# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
-# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
-ctx_rows="$(printf '%s\n' "$out" | awk '
-  /^✳ Context Management/ { seen=1; next }
-  seen && /^◎ GSD Status/  { exit }
-  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
-  END { print n+0 }
-')"
+ctx_rows="$(count_ctx_rows "$out")"
 # Title is line 1; we expect 4 content lines AFTER the title.
 [ "$ctx_rows" = "4" ] || fail "L1 (Max plan, weekly seeded): expected exactly 4 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
@@ -690,14 +692,7 @@ sid="v12-l1-pro-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""   # Pro plan: weekly absent
 out="$(p5_render "$sid" "$fix" | strip_ansi)"
-# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
-# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
-ctx_rows="$(printf '%s\n' "$out" | awk '
-  /^✳ Context Management/ { seen=1; next }
-  seen && /^◎ GSD Status/  { exit }
-  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
-  END { print n+0 }
-')"
+ctx_rows="$(count_ctx_rows "$out")"
 [ "$ctx_rows" = "3" ] || fail "L1 (Pro plan, weekly absent): expected exactly 3 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
@@ -813,16 +808,7 @@ sid="v12-l8-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" ""   # weekly absent
 out="$(p5_render "$sid" "$fix" | strip_ansi)"
-# Line 5 (where weekly would sit) should be empty / belong to spacer / GSD block.
-# Easier assertion: count content rows under "✳ Context Management" until "◎ GSD Status".
-# Count rows under "✳ Context Management" until "◎ GSD Status" (or EOF).
-# Skip: empty lines AND the U+200B zero-width-space spacer (the SP variable).
-ctx_rows="$(printf '%s\n' "$out" | awk '
-  /^✳ Context Management/ { seen=1; next }
-  seen && /^◎ GSD Status/  { exit }
-  seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
-  END { print n+0 }
-')"
+ctx_rows="$(count_ctx_rows "$out")"
 [ "$ctx_rows" = "3" ] || fail "L8: expected 3 content rows when weekly absent (model + dir/git + block+gauge), got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
