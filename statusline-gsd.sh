@@ -791,28 +791,35 @@ ctxseg="$ctxseg_full"
 emit_context_block() {
   # Title at col 0 (bold white)
   title "✳ Context Management"
-  # Indent must follow a NON-reset SGR — Claude Code trims literal whitespace
-  # that immediately follows `\033[0m`. Rows 1+2 used to survive only because
-  # powerline embeds its own leading space inside its SGR envelope; rows 3+4
-  # had no such envelope and collapsed to col 0. Putting the indent AFTER $LG
-  # makes the 3 spaces durable for every row.
-  # Row 1: model
-  printf '%s%s   %s\n' "$R" "$LG" "$model_text"
+  # Claude Code's renderer collapses runs of ASCII spaces between SGR codes
+  # down to one — rows 1+2 only kept their visible indent because powerline
+  # embeds its own leading space inside its SGR envelope; ours collapsed.
+  # Two-pronged fix:
+  #   1. Row 1 leads with the `⎿` connector glyph (DG color) so the title
+  #      visually flows into the first content line.
+  #   2. Rows 2-4 use NBSP (U+00A0) for the indent — non-breaking space is NOT
+  #      ASCII whitespace, so Claude Code does not collapse it.
+  # Width: `⎿ ` (1 glyph + 1 space) = 2 chars wide; matches 2 NBSPs on the
+  # other rows, so every content row's text starts at column 2.
+  local NBSP=$'\xc2\xa0'
+  local GAP="${NBSP}${NBSP}"
+  # Row 1: ⎿ + model
+  printf '%s%s⎿ %s%s\n' "$R" "$DG" "$LG" "$model_text"
   # Row 2: dir + V + git (physical line 1 of $line1, post-SPLICE-01 + post-transforms below)
   local line_a
   line_a="$(printf '%s' "$line1" | sed -n '1p')"
-  printf '%s%s   %s\n' "$R" "$LG" "$line_a"
+  printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$line_a"
   # Row 3: block + ctxseg_full, or ctxseg_standalone alone when block absent. The
   # `·` separator only appears BETWEEN block and gauge — when block is absent the
   # row starts directly with the gauge bar.
   if [ -n "$blockseg" ]; then
-    printf '%s%s   %s %s\n' "$R" "$LG" "$blockseg" "$ctxseg_full"
+    printf '%s%s%s%s %s\n' "$R" "$LG" "$GAP" "$blockseg" "$ctxseg_full"
   else
-    printf '%s%s   %s\n' "$R" "$LG" "$ctxseg_standalone"
+    printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$ctxseg_standalone"
   fi
   # Row 4: weekly (silent fallback when empty — row omitted)
   if [ -n "$weeklyseg" ]; then
-    printf '%s%s   %s\n' "$R" "$LG" "$weeklyseg"
+    printf '%s%s%s%s\n' "$R" "$LG" "$GAP" "$weeklyseg"
   fi
 }
 
