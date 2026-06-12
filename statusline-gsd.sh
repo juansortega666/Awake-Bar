@@ -481,19 +481,15 @@ fi
 # C-07 invariant "countdown stays LG regardless of zone" is enforceable via the
 # pattern `\e[38;5;252m↻` (used by ship-gate P6.2b and L10).
 blockseg=""
-if [ -n "$block_pct" ]; then
-  pct_color="$(zone_color "$block_pct")"
-  blockseg="${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
-fi
+[ -n "$block_pct" ] && \
+  blockseg="$(zone_color "$block_pct")${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
 
 # --- Build $weeklyseg variable (G2-04: no `⊞` glyph) ---
 # Spec: `<pct>% used ↻ <reset>` — N% colored by zone_color (F2-06), reset in LG (F2-07).
 # Same SGR-around-`↻` discipline as blockseg above.
 weeklyseg=""
-if [ -n "$weekly_pct" ]; then
-  weekly_pct_color="$(zone_color "$weekly_pct")"
-  weeklyseg="${weekly_pct_color}${weekly_pct}%${R} ${LG}used${R} ${LG}↻ ${weekly_reset}${R}"
-fi
+[ -n "$weekly_pct" ] && \
+  weeklyseg="$(zone_color "$weekly_pct")${weekly_pct}%${R} ${LG}used${R} ${LG}↻ ${weekly_reset}${R}"
 # ---- end Block + Weekly segment extraction ----
 
 # ---- Model text extraction (G2-02: drop `✱` leading glyph, F2-01: full model string) ----
@@ -509,21 +505,9 @@ fi
 #   "✱ Opus 4.7 (1M context)" → "Opus 4.7 (1M context)"
 # When powerline truncates the model badge (rare — only at very narrow widths) the
 # string still renders verbatim. F2-01: NO ad-hoc truncation here (model is info-critical).
-model_text="$(printf '%s' "$line1" | sed -n '2p')"
-# Trim from first ◱ or ◑ glyph onward (segment boundary). If neither glyph is present,
-# keep $model_text unchanged.
-case "$model_text" in
-  *◱*) model_text="${model_text%%◱*}" ;;
-esac
-case "$model_text" in
-  *◑*) model_text="${model_text%%◑*}" ;;
-esac
-# Drop the `✱ ` glyph + space (G2-02). Powerline emits it inside the model-color SGR,
-# so we strip just the 2-char sequence and let the surrounding SGR keep coloring the
-# rest of the text.
-model_text="$(printf '%s' "$model_text" | sed 's/✱ //')"
-# Trim trailing whitespace + lingering SGR resets, but keep colors.
-model_text="$(printf '%s' "$model_text" | sed -E 's/[[:space:]]*$//')"
+# All four transforms in one sed: grab line 2, trim from first ◱/◑ segment
+# boundary onward, drop the `✱ ` glyph (G2-02), strip trailing whitespace.
+model_text="$(printf '%s' "$line1" | sed -nE '2{ s/[◱◑].*$//; s/✱ //; s/[[:space:]]*$//; p; }')"
 
 # claude-powerline's "minimal" style has no separator option, so splice a dark-gray
 # "·" between segments. Boundaries are marked by a TRIPLE bg-reset (\e[49m ×3); the
@@ -786,44 +770,25 @@ ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
 # row 3 = ctxseg alone. When weeklyseg is empty (Pro plan / no seven_day data),
 # row 4 is omitted entirely. The Memory gauge (ctxseg) is always rendered.
 emit_context_block() {
-  # Title at col 0 (bold white)
+  # Per-row prefix: `│` (DG) at col 0 + ASCII space + reset SGR + NBSP + LG.
+  # The reset→LG state change around the NBSP is what keeps it from being
+  # collapsed by Claude Code's whitespace renderer. Content lands at col 3.
   title "✳ Context Management"
-  # Claude Code's renderer collapses leading whitespace that sits between two
-  # SGR codes of the SAME state — even NBSPs. Whitespace SURVIVES only when
-  # a visible character sits at column 0 (no leading-trim zone) or when an
-  # SGR-state change interrupts the whitespace run. Plain `\e[LG]   \e[LG]X`
-  # collapses to `X`; `\e[LG]   \e[0m\e[<other>] X` keeps the spaces.
-  #
-  # Visible `│` glyph (DG-colored) at column 0 of every content row — sidesteps
-  # all leading-whitespace trimming. Powerline's embedded leading space gets
-  # stripped so every row aligns at the same column regardless of producer.
-  #
-  # INDENT padding (rail-to-content gap) is built from: 1 ASCII space (survives
-  # because the visible `│` precedes it) + a reset SGR + 1 NBSP + an LG SGR.
-  # The reset→LG state change around the NBSP is what makes it survive Claude
-  # Code's renderer — runs of whitespace BETWEEN same-state SGRs collapse, but
-  # a state change preserves them. Visible width: 1 + 1 = 2 chars; content text
-  # lands at column 3.
-  local ESC=$'\033'
-  local NBSP=$'\xc2\xa0'
-  local INDENT=" ${R}${NBSP}"
-  local model_clean line_a
-  model_clean="$(printf '%s' "$model_text" | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
-  line_a="$(printf '%s' "$line1" | sed -n '1p' | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
-  # Row 1: │ + indent + model
-  printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$model_clean"
-  # Row 2: │ + indent + dir + V + git (powerline output, leading space stripped above)
-  printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$line_a"
-  # Row 3: │ + indent + block + ctxseg_full, or ctxseg_standalone when block absent
+  local nbsp=$'\xc2\xa0'
+  local indent=" ${R}${nbsp}"
+  # Strip powerline's embedded leading space so all rows align at the same column.
+  local model_clean line_a strip="s/^((${esc}\[[0-9;]*m)+) /\\1/"
+  model_clean="$(printf '%s' "$model_text" | sed -E "$strip")"
+  line_a="$(printf '%s' "$line1" | sed -nE "1{ $strip; p; }")"
+  _row() { printf '%s%s│%s%s%s\n' "$R" "$DG" "$indent" "$LG" "$1"; }
+  _row "$model_clean"
+  _row "$line_a"
   if [ -n "$blockseg" ]; then
-    printf '%s%s│%s%s%s %s\n' "$R" "$DG" "$INDENT" "$LG" "$blockseg" "$ctxseg_full"
+    _row "$blockseg $ctxseg_full"
   else
-    printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$ctxseg_standalone"
+    _row "$ctxseg_standalone"
   fi
-  # Row 4: │ + indent + weekly (silent fallback when empty — row omitted)
-  if [ -n "$weeklyseg" ]; then
-    printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$weeklyseg"
-  fi
+  [ -n "$weeklyseg" ] && _row "$weeklyseg"
 }
 
 # ---- locate the GSD project root (walk up from Claude's cwd) ----
