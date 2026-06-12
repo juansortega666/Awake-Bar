@@ -797,9 +797,9 @@ emit_context_block() {
   # SGR-state change interrupts the whitespace run. Plain `\e[LG]   \e[LG]X`
   # collapses to `X`; `\e[LG]   \e[0m\e[<other>] X` keeps the spaces.
   #
-  # Bulletproof fix: put a real visible glyph at column 0 of every content
-  # row. Row 1 gets `⎿` (the title→content connector). Rows 2-4 get `│` as
-  # tree-continuation indicators. Both DG-colored so the structure is quiet.
+  # Bulletproof fix: put a single visible `│` glyph at column 0 of every
+  # content row. DG-colored so the line is quiet; a continuous vertical
+  # rail visually groups the four rows under the title.
   #
   # Powerline rows (model + dir) embed their own leading space inside a
   # multi-SGR envelope — we strip that space so every row's content lands at
@@ -808,8 +808,8 @@ emit_context_block() {
   local model_clean line_a
   model_clean="$(printf '%s' "$model_text" | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
   line_a="$(printf '%s' "$line1" | sed -n '1p' | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
-  # Row 1: ⎿ + model
-  printf '%s%s⎿ %s%s\n' "$R" "$DG" "$LG" "$model_clean"
+  # Row 1: │ + model
+  printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$model_clean"
   # Row 2: │ + dir + V + git (powerline output, leading space stripped above)
   printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$line_a"
   # Row 3: │ + block + ctxseg_full, or │ + ctxseg_standalone when block absent

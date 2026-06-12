@@ -701,31 +701,24 @@ ctx_rows="$(printf '%s\n' "$out" | awk '
 [ "$ctx_rows" = "3" ] || fail "L1 (Pro plan, weekly absent): expected exactly 3 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
-# ---- L2: every content row leads with a visible DG-colored glyph at col 0 so
+# ---- L2: every content row leads with a DG-colored `│` glyph at col 0 so
 #          alignment is bulletproof — Claude Code's renderer collapses whitespace
-#          (including NBSPs) between same-state SGR codes, but visible glyphs at
-#          col 0 sidestep all leading-whitespace logic.
-#            - Row 1: `⎿ ` (DG) — title-to-content connector
-#            - Rows 2-4: `│ ` (DG) — tree continuation indicator
-#          Powerline's embedded leading space is stripped so content aligns at
-#          col 2 regardless of producer. Title sits at col 0. ----
+#          (including NBSPs) between same-state SGR codes, but a visible glyph at
+#          col 0 sidesteps all leading-whitespace logic. Uniform `│` across all 4
+#          content rows produces a continuous rail under the title. Powerline's
+#          embedded leading space is stripped so content aligns at col 2
+#          regardless of producer. Title sits at col 0. ----
 sid="v12-l2-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
 out_raw="$(p5_render "$sid" "$fix")"
-# Row 1 begins with \e[0m + \e[38;5;240m (DG) + ⎿ glyph.
-case "$out_raw" in
-  *$'\033[0m\033[38;5;240m⎿ '*) : ;;
-  *) fail "L2 (row 1): expected DG-colored ⎿ connector after title, got: $(printf '%s' "$out_raw" | head -c 600)" ;;
-esac
-# Rows 2-4 begin with \e[0m + \e[38;5;240m (DG) + │ glyph.
+# All content rows begin with \e[0m + \e[38;5;240m (DG) + │ glyph + space.
 bar_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m\033\\[38;5;240m\xe2\x94\x82 ')"
-[ "$bar_count" -ge "3" ] || fail "L2 (rows 2-4): expected ≥3 occurrences of DG-colored │ continuation glyph, got ${bar_count}: $(printf '%s' "$out_raw" | head -c 600)"
-# Title line must NOT begin with any tree glyph (it sits at col 0).
+[ "$bar_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of DG-colored │ rail glyph (one per content row), got ${bar_count}: $(printf '%s' "$out_raw" | head -c 600)"
+# Title line must NOT begin with the rail glyph (it sits at col 0).
 title_line="$(printf '%s' "$out_raw" | sed -n '1p')"
 case "$title_line" in
-  *$'\033[0m\033[38;5;240m⎿ '*) fail "L2: title line has ⎿ connector (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
-  *$'\033[0m\033[38;5;240m\xe2\x94\x82 '*) fail "L2: title line has │ continuation glyph (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
+  *$'\033[0m\033[38;5;240m\xe2\x94\x82 '*) fail "L2: title line has │ rail glyph (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
 esac
 p5_cleanup "$sid"
 
