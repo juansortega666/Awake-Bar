@@ -701,20 +701,23 @@ ctx_rows="$(printf '%s\n' "$out" | awk '
 [ "$ctx_rows" = "3" ] || fail "L1 (Pro plan, weekly absent): expected exactly 3 content rows after title, got ${ctx_rows}: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
-# ---- L2: content rows start with reset-SGR + 3 literal spaces (3-space indent);
-#          title sits at col 0 (no leading SGR-then-3-spaces pattern) ----
+# ---- L2: content rows start with reset + LG-SGR + 3 literal spaces (3-space indent);
+#          title sits at col 0 (no leading SGR-then-3-spaces pattern).
+#          The LG-SGR between reset and the 3 spaces is mandatory: Claude Code
+#          trims whitespace that immediately follows `\033[0m`, so the indent
+#          must follow a non-reset SGR to survive. ----
 sid="v12-l2-$$"
 fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
 out_raw="$(p5_render "$sid" "$fix")"
-# Each content row begins with \e[0m then 3 spaces. Anchor on the literal `\e[0m   ` (reset + 3 spaces).
+# Each content row begins with \e[0m + \e[38;5;252m (LG) + 3 spaces.
 # Count occurrences — expect at least 4 (4 content rows when weekly present).
-indent_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m   ')"
-[ "$indent_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of reset+3-space indent (one per content row), got ${indent_count}: $(printf '%s' "$out_raw" | head -c 600)"
+indent_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m\033\\[38;5;252m   ')"
+[ "$indent_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of reset+LG+3-space indent (one per content row), got ${indent_count}: $(printf '%s' "$out_raw" | head -c 600)"
 # Title line must NOT begin with the 3-space indent (it sits at col 0).
 title_line="$(printf '%s' "$out_raw" | sed -n '1p')"
 case "$title_line" in
-  *$'\033[0m   '*) fail "L2: title line has 3-space indent (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
+  *$'\033[0m\033[38;5;252m   '*) fail "L2: title line has 3-space indent (should be col 0): $(printf '%s' "$title_line" | head -c 200)" ;;
 esac
 p5_cleanup "$sid"
 
