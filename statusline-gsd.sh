@@ -328,77 +328,139 @@ if [ -z "$line1" ]; then
   printf '%s' "$line1" > "$plcache" 2>/dev/null || true
 fi
 
-# ---- splice "◈ <pkgver>" between directory and git segments ----
+# ---- splice "V <pkgver>" between directory and git segments (SPLICE-01) ----
 # claude-powerline doesn't support custom segments (only its predefined set: directory,
-# git, model, session, context, agent, today, version-of-claude-code). The version we
-# want to surface is the PROJECT's package.json semver — so we splice it ourselves AFTER
-# the powerline call but BEFORE the separator transform on the next block. We add our
-# own segment-boundary marker (triple bg-reset) so the existing separator splice picks
-# up "dir | ver | git | model | ..." in one pass. Skipped when no package.json found.
+# git, model, session, context, agent, today, weekly, block). The version we want to
+# surface is the PROJECT's package.json semver — so we splice it ourselves AFTER the
+# powerline call but BEFORE the separator transform on the next block.
 #
-# IMPORTANT: powerline output is MULTI-LINE (3 lines: dir+git / model+session+ctx / agent
-# per claude-powerline.json). A plain sed `s/X/&Y/` would substitute the first X on EACH
-# line. Use awk to substitute the first match across the WHOLE input — version appears
-# exactly once, between dir and git on line 1.
+# v1.2 SPLICE-01 fix: previously anchored on a TRIPLE bg-reset (\e[49m ×3) that older
+# powerline versions emitted between dir and git. The current powerline config emits a
+# SINGLE bg-reset on warm renders → the awk splice silently no-oped. Cold renders
+# happened to still emit triple in some code path, so ship-gate V1.A passed for the
+# wrong reason. The new anchor is the dir basename text itself — that string appears
+# verbatim in $line1 regardless of segment-end format, on BOTH cold and warm renders.
+#
+# Implementation: find the directory basename in $line1 (the same string powerline
+# emits between the dir-color SGR opener and the next bg-reset). Insert " V<pkgver>"
+# immediately AFTER the basename token. We add our own triple-bg-reset marker AFTER
+# V<pkgver> so the existing separator splice picks it up as a segment boundary.
+# Idempotency guard: skip if V<pkgver> is already present (prewarm cache re-read case).
 esc=$'\033'
-if [ -n "$pkgver" ]; then
-  verseg=" ${LG}V${pkgver}${R} ${esc}[49m${esc}[49m${esc}[49m"
-  triple="${esc}[49m${esc}[49m${esc}[49m"
-  line1="$(printf '%s' "$line1" | awk -v pat="$triple" -v rep="$verseg" '
-    !done {
-      p = index($0, pat)
-      if (p > 0) {
-        printf "%s%s%s%s\n", substr($0, 1, p + length(pat) - 1), rep, substr($0, p + length(pat)), ""
-        done = 1
-        next
+if [ -n "$pkgver" ] && ! printf '%s' "$line1" | grep -q "V${pkgver}"; then
+  dir_base="$(basename "$cwd")"
+  if [ -n "$dir_base" ]; then
+    # Splice " <triple> V<pkgver>" right BEFORE the existing dir/git triple-bg-reset boundary.
+    # Strategy:
+    #   - Find the first occurrence of $dir_base in $line1
+    #   - Walk forward to the FIRST triple-bg-reset marker after it (the existing dir|git boundary)
+    #   - Insert "<our-triple> V<pkgver>" BEFORE the existing triple
+    # Final layout: `<dir> <our-triple> V<pkgver> <existing-triple> <git>`. The downstream
+    # separator transform converts each triple into `·`, yielding:
+    #   `<dir> · V<pkgver> · <git>`
+    # If we only added ONE triple (either before or after V), V would glue against dir
+    # or against git. If we added two (ours + kept the original) without subtracting the
+    # one already present, we'd get `· ·` doubled separators. Net: one triple in $ver,
+    # placed BEFORE the existing one.
+    triple="${esc}[49m${esc}[49m${esc}[49m"
+    line1="$(printf '%s' "$line1" | awk -v base="$dir_base" -v triple="$triple" -v ver="${esc}[49m${esc}[49m${esc}[49m ${LG}V${pkgver}${R} " '
+      !done {
+        p = index($0, base)
+        if (p > 0) {
+          rest = substr($0, p + length(base))
+          t = index(rest, triple)
+          if (t > 0) {
+            # Insert ver RIGHT BEFORE the existing triple-bg-reset. The existing
+            # triple stays in place (becomes the V|git separator). Our injected
+            # triple at the head of $ver becomes the dir|V separator.
+            abs_t = p + length(base) + t - 1
+            printf "%s%s%s\n", substr($0, 1, abs_t - 1), ver, substr($0, abs_t)
+            done = 1
+            next
+          }
+        }
       }
-    }
-    { print }
-  ')"
+      { print }
+    ')"
+  fi
 fi
 
-# ---- Block segment → §-format transform (QUOTA-01 + COLOR-02) ----
-# Powerline's `block` segment outputs the official Claude.ai 5-hour rate-limit
-# window utilization (sourced from Claude Code's `rate_limits` hook). Default
-# format is `◱ N% (Xh Ym)` — icon, percentage, parenthesized reset time
-# (verified against @owloops/claude-powerline source: formatPercentageWithBar
-# returns `${pct}% (${timeRemaining})` and `h()` formats time as "Xh Ym" / "Xh"
-# / "Ym" depending on minutes-remaining bucket).
+# ---- Block + Weekly segments — extract data, build $blockseg / $weeklyseg vars (v1.2) ----
+# Powerline emits two rate-limit segments on physical line 2 of $line1:
+#   block:  `◱ N% (Xh Ym)`   — 5-hour window
+#   weekly: `◑ N% (Xd Yh)`   — 7-day window (NEW v1.2, Max plan only)
 #
-# We transform this into the v1.1 spec format `§ N% used ↻ Nh` (or `↻ Nm` when
-# the reset is <60 minutes away), with the N% colored via zone_color() — same
-# 3-zone rule as the Memory gauge (CONTEXT.md C-06). The reset countdown stays
-# light gray (252) regardless of zone per C-07.
+# v1.2 reflow change: instead of splicing transformed segments BACK into $line1,
+# we extract data into bash vars ($blockseg, $weeklyseg) and use them directly
+# at the emit point below. This keeps the 4-line reflow simple — the model line
+# comes from $line1 line 2's prefix, blockseg+ctxseg become row 3, weeklyseg
+# becomes row 4. Physical line 2 of $line1 is effectively discarded after this
+# extraction (only its leading model text gets reused, captured into $model_text
+# below).
 #
-# Silent-fallback contract (ROBUST-02): when the rate_limits hook is unavailable
-# (free-tier users OR Claude.ai not authenticated), powerline omits the segment
-# entirely and our regex finds no match — the splice is a no-op and the bar
-# continues rendering Model + Memory gauge without `§ N% used ↻ Nh`.
+# Spec change from v1.1: `§` glyph dropped from blockseg; `⊞` glyph dropped from
+# weekly (G2-03, G2-04). Both segments now start directly with `<pct>% used ↻ <reset>`.
+# The N% is colored via zone_color() (3-zone rule, G2-06). The reset countdown stays
+# light gray regardless of zone (F2-07).
 #
-# After this splice, line 2 contains a `§` glyph (our installed marker) which
-# the Memory-gauge splice further down ("sed /§/...") anchors on to append
-# the usage gauge. So this transform MUST run BEFORE the Memory gauge block.
+# Silent-fallback contract (ROBUST-02 inheritance):
+#   - block absent  → $blockseg stays empty → row 3 = ctxseg only (Memory gauge)
+#   - weekly absent → $weeklyseg stays empty → row 4 is omitted at emit time
+#
+# IMPORTANT: extract weekly BEFORE block on the raw $line1 — sed -n '...|head -1'
+# greedy matching would otherwise pull the block's (Nh Ym) over weekly's (Nd Nh)
+# if the patterns overlap. We anchor each on its own glyph (◱ / ◑) to keep them
+# disjoint.
+
+# --- Weekly segment extraction (anchored on ◑) ---
+# Pattern: ◑ <pct>% (<reset_raw>) where reset_raw can be "4d 3h" / "12h 30m" / "47m".
+weekly_pct=""
+weekly_reset=""
+weekly_match="$(printf '%s' "$line1" | sed -nE 's/.*◑[[:space:]]*([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
+if [ -n "$weekly_match" ]; then
+  weekly_pct="${weekly_match%%|*}"
+  weekly_reset_raw="${weekly_match#*|}"
+  # Normalize reset (F2-04): `Nd Nh` when ≥1d, `Nh` when <1d but ≥1h, `Nm` when <1h.
+  case "$weekly_reset_raw" in
+    *d*)
+      # "4d 3h" → "4d 3h"; "4d 0h" → "4d"; "4d" → "4d"
+      wd="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+d).*/\1/p')"
+      wh="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+h).*/\1/p')"
+      if [ -n "$wh" ] && [ "$wh" != "0h" ]; then
+        weekly_reset="${wd} ${wh}"
+      else
+        weekly_reset="${wd}"
+      fi
+      ;;
+    *h*)
+      # "12h 30m" → "12h"; "0h 47m" → "47m"
+      weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+h).*/\1/p')"
+      if [ "$weekly_reset" = "0h" ]; then
+        weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+m).*/\1/p')"
+        [ -z "$weekly_reset" ] && weekly_reset="0m"
+      fi
+      ;;
+    *m*)
+      weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+m).*/\1/p')"
+      ;;
+    *)
+      weekly_reset="$weekly_reset_raw"
+      ;;
+  esac
+fi
+
+# --- Block segment extraction (anchored on ◱) ---
+# Pattern: ◱ <pct>% (<reset_raw>) where reset_raw is "Xh Ym" / "Xh" / "Ym".
 block_pct=""
 block_reset=""
-# Portable extraction via sed (BSD awk lacks match()-with-array, so we go
-# straight to sed for compatibility). Pattern: digits before %, then text
-# inside the next () — captured as "<pct>|<reset_raw>".
-block_match="$(printf '%s' "$line1" | sed -nE 's/.*[^0-9]([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
-
+block_match="$(printf '%s' "$line1" | sed -nE 's/.*◱[[:space:]]*([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
 if [ -n "$block_match" ]; then
   block_pct="${block_match%%|*}"
   block_reset_raw="${block_match#*|}"
-  # Normalize reset to either "Nh" (when contains 'h') or "Nm" (when only 'm').
-  # Floor units: drop minutes when ≥1h. Examples:
-  #   "4h 12m" → "4h"
-  #   "0h 47m" → "47m"   (sub-hour, switch to minutes)
-  #   "47m"    → "47m"
-  #   "1h"     → "1h"
+  # Normalize reset to "Nh" (when ≥1h) or "Nm" (when <1h). Floor: drop minutes when ≥1h.
   case "$block_reset_raw" in
     *h*)
-      # Extract leading "Nh" — drop trailing minutes and any whitespace.
       block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+h).*/\1/p')"
-      # Edge case: "0h 47m" → reset is sub-hour, switch to minutes representation.
       if [ "$block_reset" = "0h" ]; then
         block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+m).*/\1/p')"
         [ -z "$block_reset" ] && block_reset="0m"
@@ -411,35 +473,59 @@ if [ -n "$block_match" ]; then
       block_reset="$block_reset_raw"
       ;;
   esac
-
-  # Color the N% via zone_color (COLOR-02 — same thresholds as Memory gauge).
-  # The reset countdown stays in light gray (C-07 — neutral info).
-  pct_color="$(zone_color "$block_pct")"
-  # Leading space ensures `-` separator has visible gap before `§` glyph.
-  # Without it: `Claude -§ 25%` (dash glued to glyph). With it: `Claude - § 25%`.
-  blockseg=" ${LG}§${R} ${pct_color}${block_pct}%${R} ${LG}used${R} ${LG}↻ ${block_reset}${R}"
-
-  # Replace powerline's native block segment in line1. Anchor on the
-  # `<digits>% (<reset>)` substring — plus the immediately preceding glyph
-  # or whitespace — so we strip the `◱` icon along with the percentage and
-  # parens. Use awk first-match-across-multi-line (mirrors version splice
-  # pattern above — replaces text in the first matching line only).
-  line1="$(printf '%s' "$line1" | awk -v rep="$blockseg" '
-    !done && match($0, /[^A-Za-z0-9]?[^[:space:]]*[[:space:]]?[0-9]+%[[:space:]]*\([^)]+\)/) {
-      printf "%s%s%s\n", substr($0, 1, RSTART - 1), rep, substr($0, RSTART + RLENGTH)
-      done = 1
-      next
-    }
-    { print }
-  ')"
 fi
-# ---- end Block segment transform ----
+
+# --- Build $blockseg variable (G2-03: no `§` glyph, no `used` label between pct and ↻) ---
+# Spec: `<pct>% used ↻ <reset>` — N% colored by zone_color, the rest in light gray.
+blockseg=""
+if [ -n "$block_pct" ]; then
+  pct_color="$(zone_color "$block_pct")"
+  blockseg="${pct_color}${block_pct}%${R} ${LG}used ↻ ${block_reset}${R}"
+fi
+
+# --- Build $weeklyseg variable (G2-04: no `⊞` glyph) ---
+# Spec: `<pct>% used ↻ <reset>` — N% colored by zone_color (F2-06), reset in LG (F2-07).
+weeklyseg=""
+if [ -n "$weekly_pct" ]; then
+  weekly_pct_color="$(zone_color "$weekly_pct")"
+  weeklyseg="${weekly_pct_color}${weekly_pct}%${R} ${LG}used ↻ ${weekly_reset}${R}"
+fi
+# ---- end Block + Weekly segment extraction ----
+
+# ---- Model text extraction (G2-02: drop `✱` leading glyph, F2-01: full model string) ----
+# Physical line 2 of $line1 is the model+block+weekly line. We need to extract just
+# the model text with its color SGR intact, but strip the `✱ ` prefix and any trailing
+# block/weekly segments. Strategy:
+#   1. Grab physical line 2 as a string
+#   2. Trim everything from the first segment glyph (◱ or ◑) onward
+#   3. Strip the `✱ ` prefix (powerline's native model icon — G2-02 drops it)
+# Result: $model_text contains just the model name with its color SGR ready to render
+# at column 4 of the reflow. Examples:
+#   "✱ Claude" → "Claude"
+#   "✱ Opus 4.7 (1M context)" → "Opus 4.7 (1M context)"
+# When powerline truncates the model badge (rare — only at very narrow widths) the
+# string still renders verbatim. F2-01: NO ad-hoc truncation here (model is info-critical).
+model_text="$(printf '%s' "$line1" | sed -n '2p')"
+# Trim from first ◱ or ◑ glyph onward (segment boundary). If neither glyph is present,
+# keep $model_text unchanged.
+case "$model_text" in
+  *◱*) model_text="${model_text%%◱*}" ;;
+esac
+case "$model_text" in
+  *◑*) model_text="${model_text%%◑*}" ;;
+esac
+# Drop the `✱ ` glyph + space (G2-02). Powerline emits it inside the model-color SGR,
+# so we strip just the 2-char sequence and let the surrounding SGR keep coloring the
+# rest of the text.
+model_text="$(printf '%s' "$model_text" | sed 's/✱ //')"
+# Trim trailing whitespace + lingering SGR resets, but keep colors.
+model_text="$(printf '%s' "$model_text" | sed -E 's/[[:space:]]*$//')"
 
 # claude-powerline's "minimal" style has no separator option, so splice a dark-gray
-# "-" between segments. Boundaries are marked by a TRIPLE bg-reset (\e[49m ×3); the
+# "·" between segments. Boundaries are marked by a TRIPLE bg-reset (\e[49m ×3); the
 # first segment and the line-end use a single \e[49m, so spaces inside a value like
 # "Opus 4.7 (1M context)" stay untouched. $esc was declared in the version-splice
-# block above.
+# block above. v1.2 changed separator from `-` to `·` per layout spec (DISCUSS §1).
 # ---- 20-char dir-basename truncation (LAYOUT-02) ----
 # The directory is the first plain-text run in line1, ending at the first
 # segment boundary. Powerline emits "\e[<...>m\e[49m\e[<color>m DIR \e[0m\e[49m\e[49m\e[49m..."
@@ -459,7 +545,7 @@ if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
   line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${trunc_dir}|")"
 fi
 
-line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}-${R}${esc}[49m${esc}[49m${esc}[49m/g")"
+line1="$(printf '%s' "$line1" | sed "s/${esc}\[49m${esc}\[49m${esc}\[49m/${DG}·${R}${esc}[49m${esc}[49m${esc}[49m/g")"
 
 # ---- State-aware branch color (COLOR-01) ----
 # Determines the branch color from the gs_* flags populated by read_git_state.
@@ -670,24 +756,56 @@ ctxbar="${ctxbar}${R}"
 # Intentional shift from v1.0's `cfill >= 7` (~72%) inline heuristic to the
 # canonical 67% threshold locked by CONTEXT.md C-06 (no drift between gauges).
 numcol="$(zone_color "$ctxpct")"
-# Splice "- <gauge> NN% used" onto the powerline session line (carries §);
-# the session segment already ends with a space. Inverts the v1.0 math: we
-# now display the USED percentage (ctxpct) directly, matching Claude's native
-# UI ("Current session 25% used") and unifying language to English (C-04).
-# The gauge bar visualization (▓ filled = used) was already correct — only
-# the trailing number+label change.
-# Drops "used" from the trailing label per user UAT 2026-06-01 — the gauge's
-# filled cells already convey "used", the word is redundant and adds line
-# width without signal. NO leading space: the model segment's trailing
-# space (from powerline) provides the gap before `-`.
-ctxseg="${DG}-${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
-# Anchor on `✱` (the model segment glyph — always present on line 2). Pre-v1.1
-# this splice anchored on `§` (the session segment's glyph), which worked because
-# session was always enabled. Post-v1.1, the `§` is installed by the block
-# splice above ONLY when powerline's rate_limits hook fires (Pro/Max users). For
-# non-Pro users the `§` is absent, but the Memory gauge must still render — so
-# we anchor on `✱` which is guaranteed by the model segment.
-line1="$(printf '%s' "$line1" | sed "/✱/s/\$/${ctxseg}/")"
+# Build $ctxseg as a standalone variable (no splice into $line1). v1.2 reflow uses
+# it directly at the emit point: row 3 = blockseg + ctxseg (or ctxseg alone when
+# block absent). Separator changed from `-` to `·` per L5 spec; gauge bar then `%`,
+# NO `used` label adjacent (L6).
+# ctxseg has two forms:
+#   ctxseg_full     = " · ▓░░░ N%"  → appended to blockseg with leading separator
+#   ctxseg_standalone = "▓░░░ N%"   → row 3 standalone when block absent
+ctxseg_full="${DG}·${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
+ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
+# Backward-compat alias (any later code that references $ctxseg gets the full form,
+# which is the historical shape used by the legacy splice).
+ctxseg="$ctxseg_full"
+
+# ---- Context Management 4-line reflow emitter (v1.2) ----
+# Emits: title + 3 (or 4) indented content rows. Each row is prefixed with a reset
+# SGR + 3 literal spaces (Claude Code trims leading literal whitespace, but a space
+# that follows an SGR survives — same pattern the legacy GSD row uses for its
+# 1-space indent at the bottom of this script).
+#
+# Row layout (per v1.2 DISCUSS §1 + L2-01..L2-05):
+#   Row 1: full model string (e.g. "Opus 4.7 (1M context)") — F2-01
+#   Row 2: <dir> · V<pkgver> · ⎇ <branch> <git-flags>     — physical line 1 of $line1
+#   Row 3: <block%> used ↻ Nh · ▓░░░ <ctx%>               — blockseg + ctxseg (or ctxseg alone)
+#   Row 4: <weekly%> used ↻ Nd Nh                          — weeklyseg, omitted if empty
+#
+# Silent-fallback contract: when blockseg is empty (non-Pro / no rate_limits data),
+# row 3 = ctxseg alone. When weeklyseg is empty (Pro plan / no seven_day data),
+# row 4 is omitted entirely. The Memory gauge (ctxseg) is always rendered.
+emit_context_block() {
+  # Title at col 0 (bold white)
+  title "✳ Context Management"
+  # Row 1: model
+  printf '%s   %s%s\n' "$R" "$LG" "$model_text"
+  # Row 2: dir + V + git (physical line 1 of $line1, post-SPLICE-01 + post-transforms below)
+  local line_a
+  line_a="$(printf '%s' "$line1" | sed -n '1p')"
+  printf '%s   %s\n' "$R" "$line_a"
+  # Row 3: block + ctxseg_full, or ctxseg_standalone alone when block absent. The
+  # `·` separator only appears BETWEEN block and gauge — when block is absent the
+  # row starts directly with the gauge bar.
+  if [ -n "$blockseg" ]; then
+    printf '%s   %s %s\n' "$R" "$blockseg" "$ctxseg_full"
+  else
+    printf '%s   %s\n' "$R" "$ctxseg_standalone"
+  fi
+  # Row 4: weekly (silent fallback when empty — row omitted)
+  if [ -n "$weeklyseg" ]; then
+    printf '%s   %s\n' "$R" "$weeklyseg"
+  fi
+}
 
 # ---- locate the GSD project root (walk up from Claude's cwd) ----
 # $cwd already resolved above (used by the version walk).
@@ -698,12 +816,11 @@ while [ "$dir" != "/" ] && [ -n "$dir" ]; do
   dir="$(dirname "$dir")"
 done
 
-# Not a GSD project → Context Management block only (title + powerline).
-# Powerline supplies its own 1-space leading padding, matching the GSD block.
+# Not a GSD project → Context Management block only (4-line indented reflow).
+# emit_context_block (defined above) renders title + 3 or 4 content rows.
 if [ -z "$state" ]; then
-  title "✳ Context Management"
-  printf '%s' "$line1"
-  printf '\n%s' "$SP"
+  emit_context_block
+  printf '%s' "$SP"
   exit 0
 fi
 
@@ -923,9 +1040,8 @@ todo="${todo:-0}"; uat="${uat:-0}"; blocker="${blocker:-0}"
 # $blocker/$uat/$todo were populated by parse_alerts (above) — Task 1 defensive
 # init ensures they exist as 0 even if parse_alerts failed (set -uo pipefail safe).
 if [ "$done" -eq 1 ] && [ -z "$livestage" ] && [ "$blocker" -eq 0 ] 2>/dev/null && [ "$uat" -eq 0 ] 2>/dev/null && [ "$todo" -eq 0 ] 2>/dev/null; then
-  title "✳ Context Management"
-  printf '%s' "$line1"
-  printf '\n%s' "$SP"
+  emit_context_block
+  printf '%s' "$SP"
   exit 0
 fi
 
@@ -1292,14 +1408,16 @@ fi
 
 # ---- emit: two titled blocks separated by zero-width-space spacer rows ----
 # Layout (title → content → gap):
-#   Context Management
-#    <powerline>
+#   ✳ Context Management
+#      <model>                    ← 3-space indent (v1.2 reflow)
+#      <dir · V · ⎇ branch>
+#      <block% used ↻ Nh · ▓░░ ctx%>
+#      <weekly% used ↻ Nd Nh>     ← row 4 omitted when weekly absent
 #   <gap>
-#   GSD Status
-#    <gsd line>
-#   <trailing gap>   ← blank line above the TUI's "accept edits" indicator
-title "✳ Context Management"
-printf '%s' "$line1"
+#   ◎ GSD Status
+#    <gsd line>                   ← 1-space indent (legacy GSD block)
+#   <trailing gap>                ← blank line above the TUI's "accept edits" indicator
+emit_context_block
 printf '\n%s\n' "$SP"
 title "◎ GSD Status"
 # Lead with a reset code BEFORE the indent space: Claude Code trims leading
