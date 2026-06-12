@@ -363,7 +363,7 @@ if [ -n "$pkgver" ] && ! printf '%s' "$line1" | grep -q "V${pkgver}"; then
     # one already present, we'd get `· ·` doubled separators. Net: one triple in $ver,
     # placed BEFORE the existing one.
     triple="${esc}[49m${esc}[49m${esc}[49m"
-    line1="$(printf '%s' "$line1" | awk -v base="$dir_base" -v triple="$triple" -v ver="${esc}[49m${esc}[49m${esc}[49m ${LG}V${pkgver}${R} " '
+    line1="$(printf '%s' "$line1" | awk -v base="$dir_base" -v triple="$triple" -v ver="${triple} ${LG}V${pkgver}${R} " '
       !done {
         p = index($0, base)
         if (p > 0) {
@@ -769,9 +769,6 @@ numcol="$(zone_color "$ctxpct")"
 #   ctxseg_standalone = "▓░░░ N%"   → row 3 standalone when block absent
 ctxseg_full="${DG}·${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
 ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
-# Backward-compat alias (any later code that references $ctxseg gets the full form,
-# which is the historical shape used by the legacy splice).
-ctxseg="$ctxseg_full"
 
 # ---- Context Management 4-line reflow emitter (v1.2) ----
 # Emits: title + 3 (or 4) indented content rows. Each row is prefixed with a reset
@@ -1155,7 +1152,6 @@ if [ -n "$livestage" ]; then
       fi
       livelabel="${livelabel}: ${slugshown}"
     fi
-    # D-08: livecmdslug empty → livelabel stays as bare "Quick" or "Fast" (no suffix, no "(loading)").
   fi
   # Spinner: while live, the stage glyph rotates through 4 quadrant frames, one per
   # render — a "working now" signal. It advances only when the script re-runs, so it
@@ -1415,17 +1411,9 @@ if [ "$done" -eq 1 ]; then
   fi
 else
   # ----- Mode: Idle vs Mode: Active dispatch (active milestone) -----
-  # D-14: when no live command, render Idle layout (no Now: segment).
-  # When live signal present, render Active layout (Now: + cascade + spinner).
-  # Alert row (if has_alerts) is appended in both branches via $alertseg.
-  if [ "$is_live" -eq 1 ]; then
-    # Live command running — full layout with Now: segment
-    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-  else
-    # Idle: ${phaseplanseg:+...} expansion handles the empty-vs-present case in
-    # one line — collapsed from the legacy if/else after Current: unified the layout.
-    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-  fi
+  # D-14: Idle and Active layouts unified — ${phaseplanseg:+...} handles the
+  # empty-vs-present case in one line. Alert row appended via $alertseg.
+  seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
 fi
 
 # ---- emit: two titled blocks separated by zero-width-space spacer rows ----
