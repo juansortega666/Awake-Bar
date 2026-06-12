@@ -412,6 +412,31 @@ fi
 # if the patterns overlap. We anchor each on its own glyph (◱ / ◑) to keep them
 # disjoint.
 
+# Normalize powerline's raw countdown payload (string inside the parens) to
+# one of: "Nd Mh" / "Nd" / "Nh" / "Nm". Single sed pass with branch-on-match.
+# Floors `Nh Mm` to `Nh` (drop the minutes); falls back to `0m` for "0h".
+_normalize_reset() {
+  printf '%s' "$1" | sed -nE '
+    s/^[[:space:]]+//
+    s/[[:space:]]+$//
+    s/^([0-9]+d)[[:space:]]+0+h$/\1/
+    t out
+    s/^([0-9]+d)[[:space:]]+([0-9]+h).*/\1 \2/
+    t out
+    s/^([0-9]+d).*/\1/
+    t out
+    s/^0+h[[:space:]]+([0-9]+m).*/\1/
+    t out
+    s/^0+h$/0m/
+    t out
+    s/^([0-9]+h).*/\1/
+    t out
+    s/^([0-9]+m).*/\1/
+    :out
+    p
+  '
+}
+
 # --- Weekly segment extraction (anchored on ◑) ---
 # Pattern: ◑ <pct>% (<reset_raw>) where reset_raw can be "4d 3h" / "12h 30m" / "47m".
 weekly_pct=""
@@ -419,34 +444,7 @@ weekly_reset=""
 weekly_match="$(printf '%s' "$line1" | sed -nE 's/.*◑[[:space:]]*([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
 if [ -n "$weekly_match" ]; then
   weekly_pct="${weekly_match%%|*}"
-  weekly_reset_raw="${weekly_match#*|}"
-  # Normalize reset (F2-04): `Nd Nh` when ≥1d, `Nh` when <1d but ≥1h, `Nm` when <1h.
-  case "$weekly_reset_raw" in
-    *d*)
-      # "4d 3h" → "4d 3h"; "4d 0h" → "4d"; "4d" → "4d"
-      wd="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+d).*/\1/p')"
-      wh="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+h).*/\1/p')"
-      if [ -n "$wh" ] && [ "$wh" != "0h" ]; then
-        weekly_reset="${wd} ${wh}"
-      else
-        weekly_reset="${wd}"
-      fi
-      ;;
-    *h*)
-      # "12h 30m" → "12h"; "0h 47m" → "47m"
-      weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+h).*/\1/p')"
-      if [ "$weekly_reset" = "0h" ]; then
-        weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+m).*/\1/p')"
-        [ -z "$weekly_reset" ] && weekly_reset="0m"
-      fi
-      ;;
-    *m*)
-      weekly_reset="$(printf '%s' "$weekly_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+m).*/\1/p')"
-      ;;
-    *)
-      weekly_reset="$weekly_reset_raw"
-      ;;
-  esac
+  weekly_reset="$(_normalize_reset "${weekly_match#*|}")"
 fi
 
 # --- Block segment extraction (anchored on ◱) ---
@@ -456,23 +454,7 @@ block_reset=""
 block_match="$(printf '%s' "$line1" | sed -nE 's/.*◱[[:space:]]*([0-9]+)%[[:space:]]*\(([^)]+)\).*/\1|\2/p' | head -1)"
 if [ -n "$block_match" ]; then
   block_pct="${block_match%%|*}"
-  block_reset_raw="${block_match#*|}"
-  # Normalize reset to "Nh" (when ≥1h) or "Nm" (when <1h). Floor: drop minutes when ≥1h.
-  case "$block_reset_raw" in
-    *h*)
-      block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+h).*/\1/p')"
-      if [ "$block_reset" = "0h" ]; then
-        block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/.*[[:space:]]([0-9]+m).*/\1/p')"
-        [ -z "$block_reset" ] && block_reset="0m"
-      fi
-      ;;
-    *m*)
-      block_reset="$(printf '%s' "$block_reset_raw" | sed -nE 's/^[[:space:]]*([0-9]+m).*/\1/p')"
-      ;;
-    *)
-      block_reset="$block_reset_raw"
-      ;;
-  esac
+  block_reset="$(_normalize_reset "${block_match#*|}")"
 fi
 
 # --- Build $blockseg variable (G2-03: no `§` glyph, no `used` label between pct and ↻) ---
