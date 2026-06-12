@@ -797,30 +797,35 @@ emit_context_block() {
   # SGR-state change interrupts the whitespace run. Plain `\e[LG]   \e[LG]X`
   # collapses to `X`; `\e[LG]   \e[0m\e[<other>] X` keeps the spaces.
   #
-  # Bulletproof fix: put a single visible `│` glyph at column 0 of every
-  # content row. DG-colored so the line is quiet; a continuous vertical
-  # rail visually groups the four rows under the title.
+  # Visible `│` glyph (DG-colored) at column 0 of every content row — sidesteps
+  # all leading-whitespace trimming. Powerline's embedded leading space gets
+  # stripped so every row aligns at the same column regardless of producer.
   #
-  # Powerline rows (model + dir) embed their own leading space inside a
-  # multi-SGR envelope — we strip that space so every row's content lands at
-  # column 2 regardless of producer.
+  # INDENT padding (rail-to-content gap) is built from: 1 ASCII space (survives
+  # because the visible `│` precedes it) + a reset SGR + 2 NBSPs + an LG SGR.
+  # The reset→LG state change around the NBSPs is what makes them survive
+  # Claude Code's renderer — runs of whitespace BETWEEN same-state SGRs collapse,
+  # but a state change anywhere along the run preserves it. Visible width:
+  # 1 + 2 = 3 chars; content text lands at column 4.
   local ESC=$'\033'
+  local NBSP=$'\xc2\xa0'
+  local INDENT=" ${R}${NBSP}${NBSP}"
   local model_clean line_a
   model_clean="$(printf '%s' "$model_text" | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
   line_a="$(printf '%s' "$line1" | sed -n '1p' | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
-  # Row 1: │ + model
-  printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$model_clean"
-  # Row 2: │ + dir + V + git (powerline output, leading space stripped above)
-  printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$line_a"
-  # Row 3: │ + block + ctxseg_full, or │ + ctxseg_standalone when block absent
+  # Row 1: │ + indent + model
+  printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$model_clean"
+  # Row 2: │ + indent + dir + V + git (powerline output, leading space stripped above)
+  printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$line_a"
+  # Row 3: │ + indent + block + ctxseg_full, or ctxseg_standalone when block absent
   if [ -n "$blockseg" ]; then
-    printf '%s%s│ %s%s %s\n' "$R" "$DG" "$LG" "$blockseg" "$ctxseg_full"
+    printf '%s%s│%s%s%s %s\n' "$R" "$DG" "$INDENT" "$LG" "$blockseg" "$ctxseg_full"
   else
-    printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$ctxseg_standalone"
+    printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$ctxseg_standalone"
   fi
-  # Row 4: │ + weekly (silent fallback when empty — row omitted)
+  # Row 4: │ + indent + weekly (silent fallback when empty — row omitted)
   if [ -n "$weeklyseg" ]; then
-    printf '%s%s│ %s%s\n' "$R" "$DG" "$LG" "$weeklyseg"
+    printf '%s%s│%s%s%s\n' "$R" "$DG" "$INDENT" "$LG" "$weeklyseg"
   fi
 }
 
