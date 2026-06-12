@@ -713,10 +713,10 @@ fix="$(p5_fixture "$sid" "behind:0 conflict:0 detached: no_upstream:0 rebasing:0
 p7_seed_powerline "$sid" "⎇ test-branch ●" "25% (4h 12m)" "47% (4d 3h)"
 out_raw="$(p5_render "$sid" "$fix")"
 # All content rows begin with \e[0m + \e[38;5;240m (DG) + │ glyph + space +
-# \e[0m + 2 NBSPs (\xc2\xa0\xc2\xa0). The reset between the ASCII space and
-# the NBSPs is the state change that keeps the NBSPs alive in the renderer.
-bar_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m\033\\[38;5;240m\xe2\x94\x82 \033\\[0m\xc2\xa0\xc2\xa0')"
-[ "$bar_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of DG-colored │ + indent (ASCII space + reset + 2 NBSPs), got ${bar_count}: $(printf '%s' "$out_raw" | head -c 600)"
+# \e[0m + 1 NBSP (\xc2\xa0). The reset between the ASCII space and the NBSP
+# is the state change that keeps the NBSP alive in the renderer.
+bar_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m\033\\[38;5;240m\xe2\x94\x82 \033\\[0m\xc2\xa0')"
+[ "$bar_count" -ge "4" ] || fail "L2: expected ≥4 occurrences of DG-colored │ + indent (ASCII space + reset + 1 NBSP), got ${bar_count}: $(printf '%s' "$out_raw" | head -c 600)"
 # Title line must NOT begin with the rail glyph (it sits at col 0).
 title_line="$(printf '%s' "$out_raw" | sed -n '1p')"
 case "$title_line" in

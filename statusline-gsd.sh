@@ -802,14 +802,14 @@ emit_context_block() {
   # stripped so every row aligns at the same column regardless of producer.
   #
   # INDENT padding (rail-to-content gap) is built from: 1 ASCII space (survives
-  # because the visible `│` precedes it) + a reset SGR + 2 NBSPs + an LG SGR.
-  # The reset→LG state change around the NBSPs is what makes them survive
-  # Claude Code's renderer — runs of whitespace BETWEEN same-state SGRs collapse,
-  # but a state change anywhere along the run preserves it. Visible width:
-  # 1 + 2 = 3 chars; content text lands at column 4.
+  # because the visible `│` precedes it) + a reset SGR + 1 NBSP + an LG SGR.
+  # The reset→LG state change around the NBSP is what makes it survive Claude
+  # Code's renderer — runs of whitespace BETWEEN same-state SGRs collapse, but
+  # a state change preserves them. Visible width: 1 + 1 = 2 chars; content text
+  # lands at column 3.
   local ESC=$'\033'
   local NBSP=$'\xc2\xa0'
-  local INDENT=" ${R}${NBSP}${NBSP}"
+  local INDENT=" ${R}${NBSP}"
   local model_clean line_a
   model_clean="$(printf '%s' "$model_text" | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
   line_a="$(printf '%s' "$line1" | sed -n '1p' | sed -E "s/^((${ESC}\[[0-9;]*m)+) /\\1/")"
