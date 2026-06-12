@@ -10,7 +10,8 @@
       "context":   { "bg": "none", "fg": "#d0d0d0" },
       "agent":     { "bg": "none", "fg": "#d0d0d0" },
       "today":     { "bg": "none", "fg": "#d0d0d0" },
-      "block":     { "bg": "none", "fg": "#d0d0d0" }
+      "block":     { "bg": "none", "fg": "#d0d0d0" },
+      "weekly":    { "bg": "none", "fg": "#d0d0d0" }
     }
   },
   "display": {
@@ -33,11 +34,13 @@
           "_comment_context": "context segment disabled here — statusline-gsd.sh renders a 3-zone (green→amber→red) usage gauge in its place, fed by context_window.used_percentage. Re-enable here only if you drop the script gauge.",
           "_comment_session": "session segment disabled at v1.1 — replaced by `block` (5-hour rate-limit window utilization). Kept in config (enabled:false) so future toggles don't require resurrecting the segment entry.",
           "_comment_block": "block segment enabled at v1.1 (QUOTA-01). Powerline reads Claude Code's rate_limits hook. Default output is `◱ N% (Xh Ym)`. statusline-gsd.sh post-processes this into `§ N% used ↻ Nh` (or `↻ Nm` when <1h) and applies the 3-zone color rule to the N%.",
+          "_comment_weekly": "weekly segment enabled at v1.2 — Claude.ai 7-day rolling-window quota (Max plan). Default output is `◑ N% (Xd Yh)` (or `Xh Ym` for sub-day resets). statusline-gsd.sh post-processes the segment's native shape into `N% used ↻ Nd Nh` and applies the 3-zone color rule to the N%, mirroring the v1.1 block-segment treatment. Silent fallback: when the rate_limits.seven_day hook is unavailable (Pro plan), powerline omits the segment and line 4 is hidden — same pattern as v1.1 block segment.",
           "model": { "enabled": true },
           "session": { "enabled": false, "type": "tokens", "costSource": "calculated" },
           "context": { "enabled": false, "showPercentageOnly": false, "displayStyle": "text", "autocompactBuffer": 33000 },
           "today": { "enabled": false, "type": "cost" },
-          "block": { "enabled": true }
+          "block": { "enabled": true },
+          "weekly": { "enabled": true }
         }
       }
     ]
