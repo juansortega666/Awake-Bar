@@ -742,7 +742,9 @@ p5_cleanup "$sid"
 v12sid_a="v12-l4-warm-$$"
 rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}"
 # Warm scenario — pre-seed the powerline cache so the dir-basename anchor is exercised
-# on already-cached output (the SPLICE-01 case that v1.1 silently broke).
+# on already-cached output. NOTE: this fixture uses the triple-bg-reset shape; the
+# single-bg-reset case the v1.2 SPLICE-01 fix was scoped for is NOT directly exercised
+# here — see WR-01 in the v1.2 code-review for the gap.
 {
   printf '%s TreSure-Hope-Lite %s%s%s%s%s ⎇ backlog-org-board ↑6 ●%s%s\n' \
     $'\033[38;2;208;208;208m' $'\033[0m' $'\033[49m' $'\033[49m' $'\033[49m' \
@@ -876,7 +878,8 @@ p5_cleanup "$sid"
 
 # ---- L11: all git glyphs retained: ⎇ ↑N ↓N ● + state words ----
 # Synthesize each git state in isolation, confirm post-reflow it still shows.
-# Reuses Phase 5 fixtures — just asserts NEW layout doesn't lose them.
+# Reuses Phase 5 git-state fixtures with the v1.2 p7 seeder (empty block/weekly) —
+# just asserts the new 4-line reflow doesn't drop any of the glyphs.
 sid="v12-l11-flags-$$"
 fix="$(p5_fixture "$sid" "behind:2 conflict:0 detached: no_upstream:0 rebasing:0 merging:0")"
 p7_seed_powerline "$sid" "⎇ test-branch ↑3 ●" "" ""

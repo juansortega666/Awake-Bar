@@ -1,34 +1,10 @@
 #!/usr/bin/env bash
 # SessionStart hook. Pre-warms the @owloops/claude-powerline npx cache + writes
-# the session-scoped /tmp/gsd-powerline-<session_id> cache file so the very FIRST
-# render of statusline-gsd.sh finds the powerline output ready (no ~2.6s npx fetch
-# stall on cold tabs — COLD-01 fix bundled into v1.2).
+# /tmp/gsd-powerline-<session_id> so the FIRST render finds powerline already warm
+# (COLD-01 fix — eliminates the ~2.6s npx stall on cold tabs).
 #
-# Why a SessionStart hook (not a per-render warm-up):
-#   v1.1 tried "script-side background warm-up" in statusline-gsd.sh itself and
-#   regressed the warm path. Moving the warm-up OUT of the render hot path and INTO
-#   a one-shot SessionStart trigger means:
-#     (a) no overhead on the per-second render
-#     (b) the very first render of a new session finds the cache already warm
-#
-# Side-effect only: writes to /tmp/gsd-powerline-${session_id} (4s TTL — same cache
-# file statusline-gsd.sh reads at ~line 319). Always exits 0 so it never blocks
-# Claude Code session startup. The background npx is fully detached via
-# nohup + disown so the hook returns immediately.
-#
-# ---------------------------------------------------------------------------
-# USER-SIDE WIRING — add this to ~/.claude/settings.json under "hooks":
-# ---------------------------------------------------------------------------
-#   "hooks": {
-#     "SessionStart": [{
-#       "hooks": [{
-#         "type": "command",
-#         "command": "bash /Users/tresur/Documents/claude-tooling/hooks/prewarm-powerline.sh",
-#         "timeout": 5
-#       }]
-#     }]
-#   }
-# ---------------------------------------------------------------------------
+# Always exits 0; the background npx is fully detached so the hook returns
+# immediately. See README for the settings.json wiring snippet.
 
 set -uo pipefail
 

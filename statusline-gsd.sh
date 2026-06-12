@@ -62,7 +62,7 @@ cwd="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // .workspac
 [ -z "$cwd" ] && cwd="$PWD"
 
 # ---- project version (read package.json with 4s cache, PERF-01) ----
-# Walks up from cwd looking for the nearest package.json. Rendered as "◈ <semver>"
+# Walks up from cwd looking for the nearest package.json. Rendered as "V<pkgver>"
 # spliced between directory and git segments in the powerline (Context Management
 # block). Independent of GSD STATE.md walk so the version still shows in non-GSD
 # directories. Empty when no package.json found upward — splice below is skipped.
@@ -334,18 +334,14 @@ fi
 # surface is the PROJECT's package.json semver — so we splice it ourselves AFTER the
 # powerline call but BEFORE the separator transform on the next block.
 #
-# v1.2 SPLICE-01 fix: previously anchored on a TRIPLE bg-reset (\e[49m ×3) that older
-# powerline versions emitted between dir and git. The current powerline config emits a
-# SINGLE bg-reset on warm renders → the awk splice silently no-oped. Cold renders
-# happened to still emit triple in some code path, so ship-gate V1.A passed for the
-# wrong reason. The new anchor is the dir basename text itself — that string appears
-# verbatim in $line1 regardless of segment-end format, on BOTH cold and warm renders.
-#
-# Implementation: find the directory basename in $line1 (the same string powerline
-# emits between the dir-color SGR opener and the next bg-reset). Insert " V<pkgver>"
-# immediately AFTER the basename token. We add our own triple-bg-reset marker AFTER
-# V<pkgver> so the existing separator splice picks it up as a segment boundary.
-# Idempotency guard: skip if V<pkgver> is already present (prewarm cache re-read case).
+# v1.2 SPLICE-01 fix: the splice still requires a triple-bg-reset downstream
+# (the awk walks forward from the basename to find one). The dir-basename
+# pre-anchor was added to make the splice unambiguous when the dir SGR opener
+# doesn't match the old sed pattern — without it, mid-dir prefix matches could
+# splice into the wrong column. If powerline ever drops the triple entirely,
+# the splice no-ops gracefully (V<pkgver> just doesn't render).
+# Idempotency guard: skip if V<pkgver> is already present — the awk would
+# otherwise inject a second V if re-run on already-spliced input.
 esc=$'\033'
 if [ -n "$pkgver" ] && ! printf '%s' "$line1" | grep -q "V${pkgver}"; then
   dir_base="$(basename "$cwd")"
@@ -385,32 +381,12 @@ if [ -n "$pkgver" ] && ! printf '%s' "$line1" | grep -q "V${pkgver}"; then
   fi
 fi
 
-# ---- Block + Weekly segments — extract data, build $blockseg / $weeklyseg vars (v1.2) ----
-# Powerline emits two rate-limit segments on physical line 2 of $line1:
-#   block:  `◱ N% (Xh Ym)`   — 5-hour window
-#   weekly: `◑ N% (Xd Yh)`   — 7-day window (NEW v1.2, Max plan only)
-#
-# v1.2 reflow change: instead of splicing transformed segments BACK into $line1,
-# we extract data into bash vars ($blockseg, $weeklyseg) and use them directly
-# at the emit point below. This keeps the 4-line reflow simple — the model line
-# comes from $line1 line 2's prefix, blockseg+ctxseg become row 3, weeklyseg
-# becomes row 4. Physical line 2 of $line1 is effectively discarded after this
-# extraction (only its leading model text gets reused, captured into $model_text
-# below).
-#
-# Spec change from v1.1: `§` glyph dropped from blockseg; `⊞` glyph dropped from
-# weekly (G2-03, G2-04). Both segments now start directly with `<pct>% used ↻ <reset>`.
-# The N% is colored via zone_color() (3-zone rule, G2-06). The reset countdown stays
-# light gray regardless of zone (F2-07).
-#
-# Silent-fallback contract (ROBUST-02 inheritance):
-#   - block absent  → $blockseg stays empty → row 3 = ctxseg only (Memory gauge)
-#   - weekly absent → $weeklyseg stays empty → row 4 is omitted at emit time
-#
-# IMPORTANT: extract weekly BEFORE block on the raw $line1 — sed -n '...|head -1'
-# greedy matching would otherwise pull the block's (Nh Ym) over weekly's (Nd Nh)
-# if the patterns overlap. We anchor each on its own glyph (◱ / ◑) to keep them
-# disjoint.
+# ---- Block + Weekly segments — extract data, build $blockseg / $weeklyseg vars ----
+# Powerline emits `◱ N% (Xh Ym)` (5-hour, block) and `◑ N% (Xd Yh)` (7-day, weekly,
+# Max only) on physical line 2 of $line1. We extract pct + reset into bash vars used
+# by the emit_context_block reflow below. Each segment is glyph-anchored so the
+# patterns stay disjoint; when a segment is absent its var stays empty and its row
+# is omitted at emit time (ROBUST-02 silent-fallback).
 
 # Normalize powerline's raw countdown payload (string inside the parens) to
 # one of: "Nd Mh" / "Nd" / "Nh" / "Nm". Single sed pass with branch-on-match.
@@ -879,7 +855,7 @@ percent="${percent//[^0-9]/}"; cdone="${cdone//[^0-9]/}"; ctot="${ctot//[^0-9]/}
 [ -z "$ctot" ] && ctot=0
 
 # $milestone (from STATE.md, e.g. "v1.8") drives planning lookups (archived check etc).
-# Version display lives in Context Management now (◈ <pkgver> spliced into powerline
+# Version display lives in Context Management now (V<pkgver> spliced into powerline
 # above line ~110), so no $milestone_display variable is needed here anymore.
 
 # ---- progress bar (8 cells) ----
