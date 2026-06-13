@@ -4,6 +4,8 @@
 
 A status bar for [Claude Code](https://claude.com/claude-code) that actually tells you where you are.
 
+**Designed for [gsd-pi](https://github.com/open-gsd/gsd-pi)** — the GSD framework. The Context Management block works in any Claude Code project; the GSD Status block lights up when you're inside a gsd-pi project.
+
 Two blocks, four lines, no decoding.
 
 ```
@@ -27,7 +29,7 @@ Two blocks, four lines, no decoding.
 - 5-hour rate-limit window + conversation memory gauge (3-zone color: green / amber / red)
 - 7-day rate-limit window (Max plan only — auto-hides on Pro)
 
-**GSD Status** (when you use the [GSD framework](https://github.com/dtcc-dev/get-shit-done-cc)) — your workflow position:
+**GSD Status** — your workflow position when you use the [GSD framework (gsd-pi)](https://github.com/open-gsd/gsd-pi). Awake's GSD block is purpose-built for the GSD project structure (milestones, phases, stages, plans, side-channels):
 - Current milestone name
 - Current phase + position (`Phase 3/7`)
 - Current stage with rotating spinner when active, ⚠ when hung >60s
@@ -164,7 +166,7 @@ AWAKE_FIXTURE_PROJECT="" bash tests/v1-ship-gate.sh
 
 Built on:
 - [@owloops/claude-powerline](https://github.com/Owloops/claude-powerline) — the powerline renderer for the Context Management block
-- [get-shit-done-cc](https://github.com/dtcc-dev/get-shit-done-cc) — the GSD framework the GSD block tracks
+- [gsd-pi](https://github.com/open-gsd/gsd-pi) — the GSD framework Awake's GSD block is designed for
 - The Claude Code team for shipping `statusLine` + `subagentStatusLine` config hooks
 
 ## License
