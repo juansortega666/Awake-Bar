@@ -1,1 +1,12 @@
+# Project planning (GSD workflow artifacts — not for the public)
 .planning/
+
+# macOS
+.DS_Store
+
+# Local Claude Code settings (per-machine, never share)
+.claude/settings.local.json
+
+# Temporary files
+*.swp
+*.tmp

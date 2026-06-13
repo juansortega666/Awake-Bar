@@ -1160,11 +1160,10 @@ if [ -n "$livestage" ]; then
   fi
 fi
 
-# D-19 regression target: TreSur STATE.md (phase 33 of milestone v1.7) has
-# frontmatter total_plans: 89 (milestone-wide) but body "Plan: Not started"
-# for phase 33. Pre-fix the bar showed "Ph33/89" (wrong — used $ptot).
-# Post-fix the bar shows "M32/38 · Ph33" in idle (no Pl because no plan running).
-# During Execute it would show "... · Pl<n>/<m>" with m from "Plan: N of M".
+# D-19 regression: frontmatter `total_plans:` is milestone-wide, but the bar's
+# Pl<cur>/<tot> denominator must be PHASE-LOCAL. Source of truth = body line
+# "Plan: <cur> of <tot>" written by the executor. Without this fix, a phase with
+# 2-3 plans in a milestone of 89 would render `Pl1/89` (wrong).
 pc="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+([0-9]+).*/\1\/\2/p')"
 pseg=""; [ -n "$pc" ] && pseg=" ${pc}"
 prun="$(printf '%s' "$planline" | sed -nE 's/.*[Pp]lan:[[:space:]]*([0-9]+)[[:space:]]+of[[:space:]]+[0-9]+.*/\1/p')"

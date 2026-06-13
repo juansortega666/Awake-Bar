@@ -34,7 +34,12 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATUS="${REPO}/statusline-gsd.sh"
-TRESUR_STATE="/Users/tresur/Documents/TreSure-Hope-Lite/.planning/STATE.md"
+
+# Real-world GSD consumer used for smoke tests (D-07 + D-19 + V1.A regressions).
+# Override with `AWAKE_FIXTURE_PROJECT=/path/to/some-gsd-project bash tests/v1-ship-gate.sh`
+# to run against your own GSD project, or set to "" to skip the consumer-smoke tests.
+AWAKE_FIXTURE_PROJECT="${AWAKE_FIXTURE_PROJECT:-${HOME}/Documents/TreSure-Hope-Lite}"
+TRESUR_STATE="${AWAKE_FIXTURE_PROJECT}/.planning/STATE.md"
 
 fail() {
   printf 'v1.2 SHIP GATE: FAIL — %s\n' "$1"
@@ -257,11 +262,17 @@ expected_palette='38;5;114,38;5;117,38;5;141,38;5;173,38;5;178,38;5;203,38;5;209
 actual_palette="$(grep -oE '38;5;[0-9]+' "$STATUS" | sort -u | tr '\n' ',')"
 [ "$actual_palette" = "$expected_palette" ] || fail "palette mismatch — got '$actual_palette' expected '$expected_palette'"
 
-# ---- D-07 + D-19: Smoke test vs TreSur + Pl denominator regression ----
-[ -f "$TRESUR_STATE" ] || fail "TreSur STATE.md not found at $TRESUR_STATE"
+# ---- D-07 + D-19: Smoke test vs real GSD consumer + Pl denominator regression ----
+# Requires AWAKE_FIXTURE_PROJECT to point at a real GSD project (default: TreSur).
+# Set AWAKE_FIXTURE_PROJECT="" to skip the consumer-smoke tests entirely.
+if [ -z "${AWAKE_FIXTURE_PROJECT}" ] || [ ! -f "$TRESUR_STATE" ]; then
+  echo "skip: AWAKE_FIXTURE_PROJECT not set or STATE.md missing — D-07/D-19/V1 smoke tests skipped" >&2
+  echo "v1.2 SHIP GATE: PASS"
+  exit 0
+fi
 testsid="ship-gate-$$"
 rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}"
-printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' "$testsid" > "/tmp/${testsid}-input.json"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' "$testsid" "$AWAKE_FIXTURE_PROJECT" > "/tmp/${testsid}-input.json"
 out="$(bash "$STATUS" < "/tmp/${testsid}-input.json" 2>&1)"
 # Required: cascade M{n}/{m} · Ph{n} present — UNLESS the current milestone has
 # already been archived (its ROADMAP exists at .planning/milestones/<ms>-ROADMAP.md).
@@ -270,7 +281,7 @@ out="$(bash "$STATUS" < "/tmp/${testsid}-input.json" 2>&1)"
 trsmilestone="$(grep -m1 -E '^milestone:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
 trscompleted="$(grep -m1 -E '^  completed_phases:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
 trstotal="$(grep -m1 -E '^  total_phases:' "$TRESUR_STATE" | sed -E 's/.*:[[:space:]]*//;s/[[:space:]]*$//')"
-trsplanning="/Users/tresur/Documents/TreSure-Hope-Lite/.planning"
+trsplanning="${AWAKE_FIXTURE_PROJECT}/.planning"
 trsarchived=0
 for _ms in "$trsmilestone" "v${trsmilestone}"; do
   [ -f "${trsplanning}/milestones/${_ms}-ROADMAP.md" ] && trsarchived=1
@@ -297,13 +308,13 @@ fi
 # GSD block's workflow position (milestone).
 #
 # Branch A — package.json present (TreSur): V <pkgver> appears exactly once.
-trspkg="/Users/tresur/Documents/TreSure-Hope-Lite/package.json"
+trspkg="${AWAKE_FIXTURE_PROJECT}/package.json"
 [ -f "$trspkg" ] || fail "V1: TreSur package.json missing at $trspkg"
 trspkgver="$(jq -r '.version // empty' "$trspkg" 2>/dev/null)"
 [ -n "$trspkgver" ] || fail "V1: cannot read .version from TreSur package.json"
 v1sid_a="ship-gate-v1a-$$"
 rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-live-${v1sid_a}" "/tmp/gsd-wave-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}"
-printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"}}' "$v1sid_a" > "/tmp/${v1sid_a}-input.json"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v1sid_a" "$AWAKE_FIXTURE_PROJECT" > "/tmp/${v1sid_a}-input.json"
 v1_out_a="$(bash "$STATUS" < "/tmp/${v1sid_a}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
 # Must contain "V <pkgver>" (Context Management splice between dir and git):
 echo "$v1_out_a" | grep -qE "V${trspkgver}([^0-9.]|$)" || fail "V1.A: package.json version ${trspkgver} not in Context Management V segment: $(printf '%s' "$v1_out_a" | head -c 400)"
@@ -806,27 +817,28 @@ echo "$model_row" | grep -qE '✱' && fail "L3: leading ✱ glyph still present 
 p5_cleanup "$sid"
 
 # ---- L4: line 2 (dir/V/git row) contains dir, V<ver>, ⎇ <branch> in order ----
-# Uses TreSur (real package.json with .version) to confirm SPLICE-01 fix works on
-# both warm (cache present) AND cold (no cache) paths.
+# Uses the configured AWAKE_FIXTURE_PROJECT (real package.json with .version) to
+# confirm SPLICE-01 fix works on both warm (cache present) AND cold (no cache) paths.
 v12sid_a="v12-l4-warm-$$"
+fixture_dir="$(basename "$AWAKE_FIXTURE_PROJECT")"
 rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}"
 # Warm scenario — pre-seed the powerline cache so the dir-basename anchor is exercised
 # on already-cached output. NOTE: this fixture uses the triple-bg-reset shape; the
 # single-bg-reset case the v1.2 SPLICE-01 fix was scoped for is NOT directly exercised
 # here — see WR-01 in the v1.2 code-review for the gap.
 {
-  printf '%s TreSure-Hope-Lite %s%s%s%s%s ⎇ backlog-org-board ↑6 ●%s%s\n' \
-    $'\033[38;2;208;208;208m' $'\033[0m' $'\033[49m' $'\033[49m' $'\033[49m' \
+  printf '%s %s %s%s%s%s%s ⎇ backlog-org-board ↑6 ●%s%s\n' \
+    $'\033[38;2;208;208;208m' "$fixture_dir" $'\033[0m' $'\033[49m' $'\033[49m' $'\033[49m' \
     $'\033[38;2;135;215;135m' $'\033[0m' $'\033[49m'
   printf '%s✱ Claude %s%s\n' $'\033[38;5;111m' $'\033[0m' $'\033[49m'
 } > "/tmp/gsd-powerline-${v12sid_a}"
 touch "/tmp/gsd-powerline-${v12sid_a}"
-printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"}}' "$v12sid_a" > "/tmp/${v12sid_a}-input.json"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$v12sid_a" "$AWAKE_FIXTURE_PROJECT" > "/tmp/${v12sid_a}-input.json"
 v12_out_a="$(bash "$STATUS" < "/tmp/${v12sid_a}-input.json" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')"
-trspkgver="$(jq -r '.version // empty' /Users/tresur/Documents/TreSure-Hope-Lite/package.json 2>/dev/null)"
+trspkgver="$(jq -r '.version // empty' "${AWAKE_FIXTURE_PROJECT}/package.json" 2>/dev/null)"
 dirgit_row="$(printf '%s' "$v12_out_a" | sed -n '3p')"
-# Order check: TreSure-Hope-Lite ... V<ver> ... ⎇
-pos_dir="$(printf '%s' "$dirgit_row" | grep -bE -o 'TreSure-Hope-Lite' | head -1 | cut -d: -f1)"
+# Order check: <fixture-dir> ... V<ver> ... ⎇
+pos_dir="$(printf '%s' "$dirgit_row" | grep -bE -o "$fixture_dir" | head -1 | cut -d: -f1)"
 pos_ver="$(printf '%s' "$dirgit_row" | grep -bE -o "V${trspkgver}" | head -1 | cut -d: -f1)"
 pos_glyph="$(printf '%s' "$dirgit_row" | grep -bE -o '⎇' | head -1 | cut -d: -f1)"
 [ -n "$pos_dir" ] && [ -n "$pos_ver" ] && [ -n "$pos_glyph" ] || \
