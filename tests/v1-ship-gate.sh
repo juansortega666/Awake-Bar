@@ -167,11 +167,13 @@ count_ctx_rows() {
 bver="$(bash --version 2>/dev/null | head -1)"
 echo "$bver" | grep -qE 'version (3\.2|[4-9])' || fail "bash version not 3.2+: $bver"
 
-# ---- D-09: PALETTE lock — exact 7-color set ----
+# ---- D-09: PALETTE lock — exact 9-color set ----
 # Note (W2 — checker-revision 2026-05-30): ROADMAP success criterion #5 lists
 # only 6 colors (omits 231). The authoritative palette per PROJECT.md PALETTE-01
 # is the 7-color set below; 231 is "pure white" used for block titles only.
-expected_palette='38;5;114,38;5;141,38;5;178,38;5;203,38;5;231,38;5;240,38;5;252,'
+# v1.2 extension: 173 (Anthropic-brand orange, Context title) + 117 (GSD-brand
+# blue, GSD title) added as title-only hues. The locked 7 remain unchanged.
+expected_palette='38;5;114,38;5;117,38;5;141,38;5;173,38;5;178,38;5;203,38;5;231,38;5;240,38;5;252,'
 actual_palette="$(grep -oE '38;5;[0-9]+' "$STATUS" | sort -u | tr '\n' ',')"
 [ "$actual_palette" = "$expected_palette" ] || fail "palette mismatch — got '$actual_palette' expected '$expected_palette'"
 

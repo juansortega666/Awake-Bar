@@ -45,9 +45,13 @@ PUR=$'\033[38;5;141m'  # purple — GSD progress-bar fill + active step
 GRNc=$'\033[38;5;114m'   # green 114 — branch healthy + context-gauge zone 1
 YELc=$'\033[38;5;178m'   # ámbar 178 — branch warning + counters + zone 2
 REDc=$'\033[38;5;203m'   # rojo 203  — branch danger + zone 3
+# v1.2 title colors (extend PALETTE-01 with two title-only hues):
+ORG=$'\033[38;5;173m'  # Anthropic-brand orange (#d7875f) — Context Management title
+BLU=$'\033[38;5;117m'  # GSD-brand blue (#87d7ff)        — GSD Status title
 
-# A block title: bold pure-white (label + icon), on its own line. No status feedback.
-title() { printf '%s%s%s%s\n' "$B" "$W" "$1" "$R"; }
+# Block title: bold + per-block color (label + icon). No status feedback.
+# Takes optional 2nd arg = SGR color (default white).
+title() { printf '%s%s%s%s\n' "$B" "${2:-$W}" "$1" "$R"; }
 # U+200B (zero-width space) spacer line — survives Claude Code's blank-line trim,
 # producing a real vertical gap between blocks.
 SP=$'\xe2\x80\x8b'
@@ -731,7 +735,7 @@ emit_context_block() {
   # Per-row prefix: `│` (DG) at col 0 + ASCII space + reset SGR + NBSP + LG.
   # The reset→LG state change around the NBSP is what keeps it from being
   # collapsed by Claude Code's whitespace renderer. Content lands at col 3.
-  title "✳ Context Management"
+  title "✳ Context Management" "$ORG"
   local nbsp=$'\xc2\xa0'
   local indent=" ${R}${nbsp}"
   # Strip powerline's embedded leading space so all rows align at the same column.
@@ -1352,7 +1356,7 @@ fi
 #   <trailing gap>                ← blank line above the TUI's "accept edits" indicator
 emit_context_block
 printf '\n%s\n' "$SP"
-title "◎ GSD Status"
+title "◎ GSD Status" "$BLU"
 # Lead with a reset code BEFORE the indent space: Claude Code trims leading
 # literal whitespace, but a space that follows an ANSI code survives (this is
 # how the powerline keeps its indent). Keeps content indented like the other block.
