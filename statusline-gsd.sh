@@ -5,7 +5,9 @@
 #    <claude-powerline>        ← directory · V version · git / model · session · <ctx gauge>
 #                              ← zero-width-space spacer
 #   ◎ GSD Status              ← bold white title
-#    Now: <glyph> <stage> <plan>  <bar> <step/total> ⇒ Next: <stage>
+#      <milestone row>            ← rail-aligned labeled rows (v1.2 redesign)
+#      <phase row>
+#      <stage row>                 ← glyph + gerund + ⇒ next (no label)
 #                              ← trailing spacer (blank line above "accept edits")
 #
 # The GSD line is read from the current project's .planning/STATE.md. It shows from
@@ -749,18 +751,23 @@ ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
 # Silent-fallback contract: when blockseg is empty (non-Pro / no rate_limits data),
 # row 3 = ctxseg alone. When weeklyseg is empty (Pro plan / no seven_day data),
 # row 4 is omitted entirely. The Memory gauge (ctxseg) is always rendered.
+#
+# T2 (quick-260613-hlq, v1.2 GSD-block redesign): _row + nbsp + indent hoisted to
+# module scope so the new emit_gsd_block emitter can reuse the SAME rail primitive
+# (single source of truth — the rail glyph + indent shape must stay identical
+# across both blocks for the visual "one coherent system" property to hold).
+nbsp=$'\xc2\xa0'
+indent=" ${R}${nbsp}"
+# Per-row prefix: `│` (DG) at col 0 + ASCII space + reset SGR + NBSP + LG.
+# The reset→LG state change around the NBSP is what keeps it from being
+# collapsed by Claude Code's whitespace renderer. Content lands at col 3.
+_row() { printf '%s%s│%s%s%s\n' "$R" "$DG" "$indent" "$LG" "$1"; }
 emit_context_block() {
-  # Per-row prefix: `│` (DG) at col 0 + ASCII space + reset SGR + NBSP + LG.
-  # The reset→LG state change around the NBSP is what keeps it from being
-  # collapsed by Claude Code's whitespace renderer. Content lands at col 3.
   title "✳ Context Management" "$ORG"
-  local nbsp=$'\xc2\xa0'
-  local indent=" ${R}${nbsp}"
   # Strip powerline's embedded leading space so all rows align at the same column.
   local model_clean line_a strip="s/^((${esc}\[[0-9;]*m)+) /\\1/"
   model_clean="$(printf '%s' "$model_text" | sed -E "$strip")"
   line_a="$(printf '%s' "$line1" | sed -nE "1{ $strip; p; }")"
-  _row() { printf '%s%s│%s%s%s\n' "$R" "$DG" "$indent" "$LG" "$1"; }
   _row "$model_clean"
   _row "$line_a"
   if [ -n "$blockseg" ]; then
@@ -910,18 +917,18 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 # it appends a row on top of Idle or Active.
 #
 #   Mode: Idle   — default fall-through. No live signal AND milestone active.
-#                  Renders: "Version: v1.7 · M3/8 · Ph27  <bar>  ⇒ Next: Discuss"
+#                  (Pre-v1.2 cascade renderer — replaced by emit_gsd_block rows.)
 #                  Entry: `$livestage` empty + `$done` -eq 0. See line ~621.
 #
 #   Mode: Active — EITHER live signal fresh: /tmp/gsd-cmd (30min TTL) OR
 #                  /tmp/gsd-live (60s TTL). A /gsd-* command is running.
-#                  Renders: "Now: <glyph> <gerund> <cascade>  <bar>  ⇒ Next:"
+#                  (Pre-v1.2 single-line renderer — replaced by emit_gsd_block.)
 #                  Entry: `$livestage` non-empty (any live token). See line ~280.
 #
 #   Mode: Alert  — ORTHOGONAL row. When parse_alerts reports any non-zero count,
 #                  "    ⚠ <severity-ordered counts>" is appended to Idle OR Active.
 #                  Base mode renders normally; Alert just adds the row.
-#                  Entry: `$has_alerts` -eq 1. See line ~549 (alertseg) + line ~571.
+#                  Entry: legacy alert-counter path — DROPPED in v1.2 (T2 quick-260613-hlq).
 #
 # Mode naming is English (D-04). No state machine / module constants — comments
 # suffice (D-05 rejected adding variables that don't remove any code).
@@ -963,6 +970,11 @@ acol=""; aparts=""
 # Phase 4 Task 1 (D-14): wave-segment vars are populated inside the cascade builder
 # but defensive init mirrors the cts/cst/cph/csl pattern for set -uo pipefail safety.
 wts=""; wcur=""; wtot=""
+# T2 (quick-260613-hlq, v1.2 GSD-block redesign): cts/lts timestamps are read
+# inside the `if [ -f "$cf" ]` / `if [ -f "$lf" ]` blocks below; defensive-init
+# at module scope so emit_gsd_block's hung-detection arithmetic compare is safe
+# under `set -uo pipefail` even when neither live file exists.
+cts=""; lts=""
 
 # Read the subagent-panel live file ONCE: "<epoch> <stage> <cur> <tot>" (60s fresh).
 # <stage> is the fallback live stage; <cur>/<tot> drive the dynamic sub-step counter
@@ -1009,27 +1021,17 @@ if [ -n "$milestone" ] && [ "$milestone" != "?" ]; then
   done
 fi
 
-# D-10..D-13: Alert counter. parse_alerts is Phase 1's mtime-cached helper.
-# Called BEFORE the finished-check so Task 4's enhanced D-15 condition (archived
-# AND no quick/fast AND no alerts → hide GSD block) can read these counts.
-# Defensive top-level init at line ~261 (Task 1) already set blocker/uat/todo=0,
-# so a failed read leaves them at 0 (no set -uo pipefail trip).
-read -r todo uat blocker < <(parse_alerts "$state") || true
-todo="${todo:-0}"; uat="${uat:-0}"; blocker="${blocker:-0}"
-
-# Hide the whole GSD block once the milestone is finished — only Context
-# Management shows then (e.g. in completed or other-project tabs). EXCEPTION: a fresh
-# live signal ($livestage, detected above) means a GSD command is running RIGHT NOW
-# (e.g. /gsd-new-milestone between milestones, before STATE.md is rewritten) — keep the
-# bar visible and let the live override below drive the pulsing stage.
-# D-15: archived + no quick/fast + no alerts → hide entire GSD block.
-# $blocker/$uat/$todo were populated by parse_alerts (above) — Task 1 defensive
-# init ensures they exist as 0 even if parse_alerts failed (set -uo pipefail safe).
-if [ "$done" -eq 1 ] && [ -z "$livestage" ] && [ "$blocker" -eq 0 ] 2>/dev/null && [ "$uat" -eq 0 ] 2>/dev/null && [ "$todo" -eq 0 ] 2>/dev/null; then
-  emit_context_block
-  printf '%s' "$SP"
-  exit 0
-fi
+# T2 (quick-260613-hlq, v1.2 GSD-block redesign — DROP-ALERTS): the orthogonal
+# alert-counter row is removed from the GSD path per locked design (locked design
+# v1.2-gsd-block-redesign-MINIMAL.md §"Killed"). parse_alerts() the FUNCTION stays
+# defined upstream (other future consumers may want it) — only the GSD-path
+# consumption is removed. $todo/$uat/$blocker stay defensively-zeroed at top-level
+# init (~line 936) so any leftover reference under `set -uo pipefail` is safe.
+#
+# DROP archived-hide branch (locked-design VISIBILITY-01): the bar is visible
+# whenever .planning/STATE.md exists. Archived state now collapses to a single
+# "Last shipped: <name>  ⇒  /gsd-new-milestone" row inside emit_gsd_block, not
+# a hide. The block-hidden edge case is gone — solves PROJECT.md Now-Ambig #4.
 
 # ---- GSD is active (milestone in progress) → build the GSD Status line ----
 # Detect the current GSD stage, ordered along the GSD flow:
@@ -1100,8 +1102,15 @@ if [ -n "$livestage" ]; then
     # Phase 3 (QUICK-01) will render "<glyph> Quick: <slug>" using $livecmdslug.
     Quick)             glyph="⚡"; livelabel="Quick"              ;;
     Fast)              glyph="»"; livelabel="Fast"               ;;
-    Debug)             glyph="◍"; livelabel="Debugging"          ;;
+    # T2 (quick-260613-hlq, v1.2 GSD-block redesign): Debug glyph swapped
+    # ◍ → ⌖. The ORG_DBG (209) brand color is applied inside emit_gsd_block
+    # when building the side-channel row — case block stays glyph + label only.
+    Debug)             glyph="⌖"; livelabel="Debugging"          ;;
     # --- Unknown non-empty token (D-22): render raw verbatim with neutral glyph ---
+    # T2 (quick-260613-hlq) TODO: future-improvement fallback per locked design
+    # §"Unknown stages" — render `Stage: <raw-token> ⇒ ?` instead of falling
+    # through to the current state. Deferred to post-v1.2 — current behavior
+    # (raw token rendered as livelabel) is preserved.
     *)                 glyph="·"; livelabel="$step"              ;;
   esac
   # D-06..D-09: Append ": <slug>" to Quick/Fast labels when subagent panel has
@@ -1253,7 +1262,7 @@ else
   currentseg="${DG}Now:${R} ${LG}${current_label}${R}"
 fi
 
-# Next: upcoming GSD step — a transition state above may have set it, else derive
+# Upcoming GSD step — a transition state above may have set it, else derive
 # it from the current stage. Hidden when there is nothing next. The arrow (⇒) into
 # it is double-line, bold, lighter gray.
 if [ -z "$nextstep" ]; then
@@ -1277,7 +1286,7 @@ if [ -z "$nextstep" ]; then
     EvalReview)        nextstep="Ship"    ;;
     Validate)          nextstep="Ship"    ;;
     Secure)            nextstep="Ship"    ;;
-    # --- Meta-end: terminal stages have no Next: ---
+    # --- Meta-end: terminal stages have no next-stage arrow ---
     CompleteMilestone) nextstep=""        ;;
     Ship)              nextstep=""        ;;
     # --- Side channels: don't advance the milestone (gsd-flow SKILL §3) ---
@@ -1294,94 +1303,160 @@ if [ -z "$nextstep" ]; then
   esac
 fi
 nextseg=""
-[ -n "$nextstep" ] && nextseg=" ${B}${LG}⇒${R} ${DG}Next:${R} ${LG}${nextstep}${R}"
+# T2 (quick-260613-hlq, DROP-NEXT-LBL): the next-stage label token is REMOVED
+# per locked design. The `⇒` arrow alone signals direction (two spaces of
+# breathing room around it). The legacy nextseg is still built for
+# backward-compat with any downstream consumer; emit_gsd_block ignores it and
+# renders ⇒ inline.
+[ -n "$nextstep" ] && nextseg=" ${B}${LG}⇒${R} ${LG}${nextstep}${R}"
 
-# D-13: zero alerts → segment hidden entirely (no placeholder).
-# D-10: severity-first order (blocker first, then uat, then todo).
-# D-11: glyph + all counts share ONE color (red if blocker>0, else amber). Single SGR set, single reset.
-# D-12: separator is middot " · ".
-# NOTE: $acol and $aparts were defensively initialized to "" at line ~262 (Task 1)
-# so they exist even if has_alerts is false — Task 4's D-16 branch can safely
-# reuse $alertseg without re-computing them.
-# ----- Mode: Alert (orthogonal row, D-03) -----
-# When any of $blocker / $uat / $todo is > 0, build $alertseg as
-# "    ⚠ <severity-ordered counts>" colored uniformly (red if blocker, else amber).
-# This segment is APPENDED to whatever base mode (Idle or Active) is rendered
-# below — it is NOT a separate mode that replaces them. Hence "orthogonal".
-# Empty when no alerts → contributes nothing to the seg= line.
-alertseg=""
-if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo" -gt 0 ] 2>/dev/null; then
-  # D-11: severity color
-  if [ "$blocker" -gt 0 ] 2>/dev/null; then
-    acol="$REDc"
+# ---- emit_gsd_block — v1.2 GSD-block redesign (quick-260613-hlq T2) ----
+# Replaces the legacy single `Now: <stuff>` line with a rail-aligned 3-row labeled
+# layout that mirrors Context Management. State machine in priority order:
+#   1. Mid-roadmapping       (livestage=Roadmap)         → 2 rows, no Phase
+#   2. Last-shipped, archived (done=1 + no live)         → 1 row collapse
+#   3. Ready-to-ship          (percent≥100, no live)     → 1 row collapse
+#   4. Side-channel running   (Quick/Fast/Debug)         → 3 rows, Stage replaced
+#   5. Transition / Normal mid-flow                       → 3 rows (Milestone/Phase/Stage)
+#
+# Locked design: .planning/notes/v1.2-gsd-block-redesign-MINIMAL.md
+#
+# Reads (all upstream-set): $milestone_name, $phasenum, $phasename, $cdone, $ctot,
+# $livestage, $livelabel, $livecmdslug, $pc, $done, $percent, $step, $nextstep,
+# $cts, $lts, $now_epoch, $HUNG_SECS, $glyph (current spinner/static), $current_label
+# (idle gerund), $session_id.
+emit_gsd_block() {
+  title "◎ GSD Status" "$BLU"
+
+  # Truncate names per locked design (TRUNC-30).
+  local mname pname
+  mname="$(truncate30 "$milestone_name")"
+  pname="$(truncate30 "$phasename")"
+
+  # ---- Hung detection (locked design §"Stage visual states") ----
+  # Live signal is present iff $livestage non-empty. Hung when the freshest of
+  # cts/lts is older than HUNG_SECS. When neither timestamp is numeric, treat
+  # as "no recent heartbeat" → hung (defensive — a non-numeric stage token
+  # means we shouldn't show a spinner that may be lying).
+  local age_cts=99999 age_lts=99999 freshest_age=99999 is_hung=0
+  if [ -n "$cts" ] && [ "${cts//[^0-9]/}" = "$cts" ]; then
+    age_cts=$(( now_epoch - cts ))
+    [ "$age_cts" -lt 0 ] && age_cts=99999
+  fi
+  if [ -n "$lts" ] && [ "${lts//[^0-9]/}" = "$lts" ]; then
+    age_lts=$(( now_epoch - lts ))
+    [ "$age_lts" -lt 0 ] && age_lts=99999
+  fi
+  if [ "$age_cts" -lt "$age_lts" ]; then freshest_age="$age_cts"; else freshest_age="$age_lts"; fi
+  if [ -n "$livestage" ] && [ "$freshest_age" -gt "$HUNG_SECS" ]; then
+    is_hung=1
+  fi
+
+  # ---- State 1: Mid-roadmapping ----
+  # livestage=Roadmap → 2 rows: Milestone (creating…) + Stage. NO Phase row.
+  if [ "$livestage" = "Roadmap" ]; then
+    _row "${DG}Milestone:${R} ${LG}${mname}${R} ${DG}(creating…)${R}"
+    # Stage row: Active treatment (rotating ◓ + green 114 bold).
+    local stage_glyph stage_gerund
+    if [ "$is_hung" -eq 1 ]; then
+      stage_glyph="⚠"
+      _row "${DG}Stage:${R} ${B}${REDc}${stage_glyph} Roadmapping${R}  ${B}${LG}⇒${R} ${LG}Discuss${R}"
+    else
+      stage_glyph="$glyph"  # already a spinner frame from the case block (override fired)
+      _row "${DG}Stage:${R} ${B}${GRNc}${stage_glyph} Roadmapping${R}  ${B}${LG}⇒${R} ${LG}Discuss${R}"
+    fi
+    return 0
+  fi
+
+  # ---- State 2: Last-shipped, no new milestone ----
+  # done=1 (archived ROADMAP exists) AND no fresh live signal → single-row collapse.
+  if [ "$done" -eq 1 ] && [ -z "$livestage" ]; then
+    _row "${DG}Last shipped:${R} ${LG}${mname}${R}  ${B}${LG}⇒${R} ${DG}/gsd-new-milestone${R}"
+    return 0
+  fi
+
+  # ---- State 3: Ready-to-ship ----
+  # percent ≥ 100 OR cdone ≥ ctot (all phases done) AND not yet archived AND no
+  # fresh non-Roadmap live signal → single-row collapse.
+  if { [ "$percent" -ge 100 ] 2>/dev/null || { [ "$ctot" -gt 0 ] 2>/dev/null && [ "$cdone" -ge "$ctot" ] 2>/dev/null; }; } \
+     && [ "$done" -eq 0 ] && [ -z "$livestage" ]; then
+    _row "${DG}Milestone:${R} ${LG}${mname}${R}  ${B}${LG}⇒${R} ${DG}/gsd-complete-milestone${R}"
+    return 0
+  fi
+
+  # ---- States 4-6: 3-row layout (Milestone / Phase / Stage) ----
+  # Row 1: Milestone
+  _row "${DG}Milestone:${R} ${LG}${mname}${R}"
+
+  # Row 2: Phase (with `Phase <cur>/<total>` counter — always shown).
+  # When phasename empty (parse failed), collapse to "Phase: Phase N/M".
+  local phase_counter=""
+  if [ -n "$phasenum" ] && [ -n "$ctot" ] && [ "$ctot" != "0" ]; then
+    phase_counter="Phase ${phasenum}/${ctot}"
+  elif [ -n "$phasenum" ]; then
+    phase_counter="Phase ${phasenum}"
+  fi
+  if [ -n "$pname" ] && [ -n "$phase_counter" ]; then
+    _row "${DG}Phase:${R} ${LG}${pname}${R} ${DG}·${R} ${LG}${phase_counter}${R}"
+  elif [ -n "$pname" ]; then
+    _row "${DG}Phase:${R} ${LG}${pname}${R}"
+  elif [ -n "$phase_counter" ]; then
+    _row "${DG}Phase:${R} ${LG}${phase_counter}${R}"
   else
-    acol="$YELc"
+    _row "${DG}Phase:${R} ${LG}?${R}"
   fi
-  # D-10: severity-first build, dropping zero counts (D-13 corollary)
-  aparts=""
-  if [ "$blocker" -gt 0 ] 2>/dev/null; then
-    aparts="${blocker} blocker"
-  fi
-  if [ "$uat" -gt 0 ] 2>/dev/null; then
-    [ -n "$aparts" ] && aparts="${aparts} · "
-    aparts="${aparts}${uat} UAT"
-  fi
-  if [ "$todo" -gt 0 ] 2>/dev/null; then
-    [ -n "$aparts" ] && aparts="${aparts} · "
-    aparts="${aparts}${todo} ToDo"
-  fi
-  # Whole segment colored uniformly. Leading 4-space gap separates from Next:.
-  alertseg="    ${acol}⚠ ${aparts}${R}"
-fi
 
-# ---- Visibility state flags (D-14..D-18) ----
-# has_alerts: any alert count > 0 (D-13 inverse). $blocker/$uat/$todo were
-# populated by Task 3's parse_alerts call (which runs BEFORE the finished-check).
-has_alerts=0
-if [ "$blocker" -gt 0 ] 2>/dev/null || [ "$uat" -gt 0 ] 2>/dev/null || [ "$todo" -gt 0 ] 2>/dev/null; then
-  has_alerts=1
-fi
-# is_quickfast: $livestage is Quick or Fast specifically (drives D-17/D-18)
-is_quickfast=0
-if [ "$livestage" = "Quick" ] || [ "$livestage" = "Fast" ]; then
-  is_quickfast=1
-fi
-# is_live: any live command running (drives D-14's "no Now: when idle" distinction)
-is_live=0
-[ -n "$livestage" ] && is_live=1
+  # Row 3: Stage — branches on side-channel, hung, active, idle visual rules.
 
-# ---- Visibility rules D-14..D-18 ----
-# Build seg conditionally based on (done, is_live, is_quickfast, has_alerts).
-if [ "$done" -eq 1 ]; then
-  # Archived milestone — D-15 hide handled above (early exit).
-  # Remaining archived cases: D-16 (alerts only), D-17 (quick/fast only), D-18 (both).
-  if [ "$is_quickfast" -eq 1 ] && [ "$has_alerts" -eq 1 ]; then
-    # D-18: archived + quick/fast + alerts — render kind+slug AND alert counter.
-    # $alertseg already carries the leading 4-space gap + color SGR + reset — reuse it.
-    seg="${glyph} ${livecol}${stage}${livecoloff}${alertseg}"
-  elif [ "$is_quickfast" -eq 1 ]; then
-    # D-17: archived + quick/fast only — render kind+slug only
-    seg="${glyph} ${livecol}${stage}${livecoloff}"
-  elif [ "$is_live" -eq 1 ]; then
-    # Rare: archived + non-quick/fast live stage (e.g. /gsd-new-milestone running
-    # between milestones BEFORE STATE.md rewrite). Fall through to full layout
-    # so the user still sees the in-flight command — matches pre-Phase-3 behavior.
-    seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-  elif [ "$has_alerts" -eq 1 ]; then
-    # D-16: archived + alerts only — render alert segment only (NO leading 4-space gap
-    # since nothing precedes it). REUSE $alertseg (single source of truth for alert
-    # formatting per B3 fix) and strip its leading 4-space padding.
-    seg="${alertseg#    }"
+  # ---- State 4: Side-channel running (Quick / Fast / Debug) ----
+  # Replaces the entire Stage row. Only the GLYPH carries the brand color;
+  # labels and values follow normal labeled-row style (LG / DG).
+  if [ "$livestage" = "Quick" ]; then
+    if [ -n "$livecmdslug" ]; then
+      _row "${YELc}⚡${R} ${DG}Quick:${R} ${LG}${livecmdslug}${R}"
+    else
+      _row "${YELc}⚡${R} ${LG}Quick${R}"
+    fi
+    return 0
+  fi
+  if [ "$livestage" = "Fast" ]; then
+    _row "${GRNc}»${R} ${LG}Fast${R}"
+    return 0
+  fi
+  if [ "$livestage" = "Debug" ]; then
+    if [ -n "$livecmdslug" ]; then
+      _row "${ORG_DBG}⌖${R} ${DG}Debug:${R} ${LG}${livecmdslug}${R}"
+    else
+      _row "${ORG_DBG}⌖${R} ${LG}Debug${R}"
+    fi
+    return 0
+  fi
+
+  # ---- States 5-6: Normal Stage row (Transition / Idle / Active / Hung) ----
+  # Build Plan-counter suffix once (ONLY when livestage=Execute AND pc non-empty
+  # AND phase NOT decimal — same gating as the legacy Pl cascade).
+  local plan_suffix=""
+  if [ "$livestage" = "Execute" ] && [ -n "$pc" ] && [[ "$phasenum" != *.* ]]; then
+    plan_suffix=" ${DG}·${R} ${LG}Plan ${pc}${R}"
+  fi
+
+  # Build arrow + nextstep suffix (arrow alone, no label per DROP-NEXT-LBL).
+  local next_suffix=""
+  [ -n "$nextstep" ] && next_suffix="  ${B}${LG}⇒${R} ${LG}${nextstep}${R}"
+
+  if [ -z "$livestage" ]; then
+    # Idle visual state: no glyph, gerund from $current_label in LG.
+    local idle_label="${current_label:-Working}"
+    _row "${DG}Stage:${R} ${LG}${idle_label}${R}${plan_suffix}${next_suffix}"
+  elif [ "$is_hung" -eq 1 ]; then
+    # Hung visual state: STATIC ⚠ glyph + bold red 203 on glyph + gerund.
+    _row "${DG}Stage:${R} ${B}${REDc}⚠ ${livelabel}${R}${plan_suffix}${next_suffix}"
   else
-    # Defensive: should not reach here (D-15 handled above)
-    seg=""
+    # Active visual state: rotating spinner frame ($glyph already set by the
+    # spinner override at ~line 1131) + bold green 114 on glyph + gerund.
+    _row "${DG}Stage:${R} ${B}${GRNc}${glyph} ${livelabel}${R}${plan_suffix}${next_suffix}"
   fi
-else
-  # ----- Mode: Idle vs Mode: Active dispatch (active milestone) -----
-  # D-14: Idle and Active layouts unified — ${phaseplanseg:+...} handles the
-  # empty-vs-present case in one line. Alert row appended via $alertseg.
-  seg="${currentseg}${phaseplanseg:+ ${DG}·${R} ${LG}${phaseplanseg}${R}}  ${PUR}${barF}${R}${DG}${barE}${R}${counter}${nextseg}${alertseg}"
-fi
+}
 
 # ---- emit: two titled blocks separated by zero-width-space spacer rows ----
 # Layout (title → content → gap):
@@ -1392,13 +1467,11 @@ fi
 #      <weekly% used ↻ Nd Nh>     ← row 4 omitted when weekly absent
 #   <gap>
 #   ◎ GSD Status
-#    <gsd line>                   ← 1-space indent (legacy GSD block)
+#      <milestone row>            ← rail-aligned, mirrors Context Management
+#      <phase row>
+#      <stage row>
 #   <trailing gap>                ← blank line above the TUI's "accept edits" indicator
 emit_context_block
 printf '\n%s\n' "$SP"
-title "◎ GSD Status" "$BLU"
-# Lead with a reset code BEFORE the indent space: Claude Code trims leading
-# literal whitespace, but a space that follows an ANSI code survives (this is
-# how the powerline keeps its indent). Keeps content indented like the other block.
-printf '%s %s\n' "$R" "$seg"
+emit_gsd_block
 printf '%s' "$SP"
