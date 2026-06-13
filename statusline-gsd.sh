@@ -48,6 +48,10 @@ REDc=$'\033[38;5;203m'   # rojo 203  — branch danger + zone 3
 # v1.2 title colors (extend PALETTE-01 with two title-only hues):
 ORG=$'\033[38;5;173m'  # Anthropic-brand orange (#d7875f) — Context Management title
 BLU=$'\033[38;5;117m'  # GSD-brand blue (#87d7ff)        — GSD Status title
+# v1.2 GSD-block redesign (quick-260613-hlq T1): red-orange for /gsd-debug ⌖ glyph.
+# Brand-hue convention follows YELc/GRNc for Quick/Fast — glyph-only, never used
+# for labels or values. PALETTE lock now 10 colors (38;5;209 added in tests/v1-ship-gate.sh).
+ORG_DBG=$'\033[38;5;209m'  # red-orange — /gsd-debug glyph
 
 # Block title: bold + per-block color (label + icon). No status feedback.
 # Takes optional 2nd arg = SGR color (default white).
@@ -282,6 +286,20 @@ truncate20() {
   local s="$1"
   if [ "${#s}" -gt 20 ]; then
     printf '%s…' "${s:0:19}"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+# ---- 30-char truncation helper (TRUNC-30) ----
+# Identical shape to truncate20 but with a 30/29 threshold. Used by the v1.2
+# GSD-block redesign (emit_gsd_block) to clip milestone_name + phase_name before
+# rendering — the locked design caps both at 30 visible chars + … (see
+# .planning/notes/v1.2-gsd-block-redesign-MINIMAL.md §Truncation).
+truncate30() {
+  local s="$1"
+  if [ "${#s}" -gt 30 ]; then
+    printf '%s…' "${s:0:29}"
   else
     printf '%s' "$s"
   fi
@@ -836,6 +854,13 @@ parse_alerts() {
 }
 
 milestone="$(fm milestone)"
+# T1 (quick-260613-hlq, v1.2 GSD-block redesign): parse the human-readable
+# milestone name from frontmatter. STATE.md schema since v1.1 includes
+# `milestone_name:` (line 4 of project root). Falls back to $milestone (short id)
+# when absent so older STATE.md schemas still render cleanly. Used by emit_gsd_block
+# in T2 to render `Milestone: <milestone_name>` (NOT the short id).
+milestone_name="$(fm milestone_name)"
+[ -z "$milestone_name" ] && milestone_name="$milestone"
 status="$(fm status)"
 percent="$(fmnest percent)"
 cdone="$(fmnest completed_phases)"
@@ -850,6 +875,13 @@ ptot="${ptot//[^0-9]/}"; [ -z "$ptot" ] && ptot=0
 phaseline="$(grep -m1 -E '^Phase:' "$state")"
 planline="$(grep -m1 -E '^Plan:'  "$state")"
 phasenum="$(printf '%s' "$phaseline" | sed -nE 's/^Phase:[^0-9]*([0-9]+(\.[0-9]+)?).*/\1/p')"
+# T1 (quick-260613-hlq, v1.2 GSD-block redesign): parse the human-readable
+# phase name from the body `Phase:` line. Pattern: `Phase: <num> — <name>` or
+# `Phase: <num>: <name>` or `Phase: <num> - <name>`. Strip trailing status words
+# (`COMPLETE`, `(in progress)`, `✓`, `**`) and surrounding whitespace. Empty when
+# parse fails (T2 emit_gsd_block collapses to "Phase: Phase N/M" without name).
+phasename="$(printf '%s' "$phaseline" | sed -nE 's/^Phase:[[:space:]]*[0-9]+(\.[0-9]+)?[[:space:]]*[—:\-][[:space:]]*(.*)$/\2/p' \
+  | sed -E 's/[[:space:]]*\*+[[:space:]]*$//; s/[[:space:]]*✓[[:space:]]*$//; s/[[:space:]]*COMPLETE[[:space:]]*$//; s/[[:space:]]*\([^)]*\)[[:space:]]*$//; s/[[:space:]]*$//')"
 
 # sanitize numerics
 percent="${percent//[^0-9]/}"; cdone="${cdone//[^0-9]/}"; ctot="${ctot//[^0-9]/}"
@@ -915,6 +947,14 @@ while [ "$i" -lt "$cells" ]; do barE="${barE}░"; i=$((i + 1)); done
 #                             Also carries "<cur> <tot>" sub-step counts.
 # (session_id + now_epoch are computed once at the top, before the powerline cache.)
 livecol=""; livecoloff=""; livelabel=""; livestage=""; livephase=""; substep=""; livecmdslug=""
+
+# T1 (quick-260613-hlq, v1.2 GSD-block redesign): hung-state threshold.
+# When max(cts, lts) age exceeds HUNG_SECS, T2's emit_gsd_block swaps the rotating
+# `◓` spinner for a STATIC `⚠` glyph + bold red 203 coloring to signal "live
+# signal present, but no fresh heartbeat" (work is stalled). Threshold = 60s
+# matches /tmp/gsd-live TTL exactly (locked design v1.2-gsd-block-redesign-MINIMAL.md
+# §"Stage visual states": "Hung — last signal >60s ago").
+HUNG_SECS=60
 
 # Defensive top-level init — these are populated later but MAY be referenced
 # by the finished-check (D-15 enhanced) before population. set -uo pipefail safety.
