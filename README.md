@@ -1,4 +1,4 @@
-# awake
+# Awake
 
 > **wake up. read the bar.**
 
