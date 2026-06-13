@@ -53,7 +53,7 @@ No notification spam. No alerts row. No decoding required.
 
 ```bash
 # Clone wherever you want — the bar is relocatable, no hardcoded paths.
-git clone https://github.com/<your-handle>/awake-bar.git ~/.awake-bar
+git clone https://github.com/juansortega666/Awake-bar.git ~/.awake
 ```
 
 Wire it into Claude Code via `~/.claude/settings.json`:
@@ -62,29 +62,29 @@ Wire it into Claude Code via `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "bash ~/.awake-bar/statusline-gsd.sh"
+    "command": "bash ~/.awake/statusline-gsd.sh"
   },
   "subagentStatusLine": {
     "type": "command",
-    "command": "bash ~/.awake-bar/subagent-statusline.sh"
+    "command": "bash ~/.awake/subagent-statusline.sh"
   },
   "hooks": {
     "UserPromptExpansion": [{
       "hooks": [{
         "type": "command",
-        "command": "bash ~/.awake-bar/hooks/track-gsd.sh"
+        "command": "bash ~/.awake/hooks/track-gsd.sh"
       }]
     }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "bash ~/.awake-bar/hooks/track-stop.sh"
+        "command": "bash ~/.awake/hooks/track-stop.sh"
       }]
     }],
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "bash ~/.awake-bar/hooks/prewarm-powerline.sh",
+        "command": "bash ~/.awake/hooks/prewarm-powerline.sh",
         "timeout": 5
       }]
     }]
