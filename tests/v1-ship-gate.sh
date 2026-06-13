@@ -163,17 +163,97 @@ count_ctx_rows() {
   '
 }
 
+# Count non-empty content rows AFTER "◎ GSD Status" until EOF.
+# Skips empty lines AND the U+200B zero-width-space spacer. Used by G1/G9.
+count_gsd_rows() {
+  printf '%s\n' "$1" | awk '
+    /^◎ GSD Status/ { seen=1; next }
+    seen && NF>0 && $0 != "\xe2\x80\x8b" { n++ }
+    END { print n+0 }
+  '
+}
+
+# ---- v1.2 GSD-block redesign fixture helper: g_seed ----
+# Writes a STATE.md fixture under a scratch dir + optionally seeds /tmp/gsd-cmd-<sid>
+# with a stage token + age. Used by G1..G10 tests.
+#
+# Usage: g_seed <sid> <stage-token> <age-secs> [milestone_name] [phase_num] [phase_name] [plan_n_of_m] [archived?0|1] [percent] [completed_phases] [total_phases] [livecmdslug]
+#
+# Stage token "" → no /tmp/gsd-cmd file written (idle case).
+# When archived?=1, also writes .planning/milestones/v<milestone>-ROADMAP.md so $done=1 fires.
+# Returns the scratch project dir path on stdout.
+g_seed() {
+  local sid="$1"
+  local stage="${2:-}"
+  local age="${3:-5}"
+  local mname="${4:-v1.1 Context Management Refinements}"
+  local pnum="${5:-5}"
+  local pname="${6:-Git State Awareness}"
+  local plan_nm="${7:-2 of 5}"
+  local archived="${8:-0}"
+  local percent="${9:-50}"
+  local cdone="${10:-4}"
+  local ctot="${11:-6}"
+  local cmdslug="${12:--}"
+  local fix="/tmp/${sid}-fixture"
+  mkdir -p "${fix}/.planning"
+
+  cat > "${fix}/.planning/STATE.md" <<FIXTURE
+---
+gsd_state_version: 1.0
+milestone: v1.1
+milestone_name: ${mname}
+status: executing
+progress:
+  total_phases: ${ctot}
+  completed_phases: ${cdone}
+  total_plans: 12
+  completed_plans: 8
+  percent: ${percent}
+---
+
+# STATE: g_seed fixture (${sid})
+
+Phase: ${pnum} — ${pname}
+Plan: ${plan_nm}
+FIXTURE
+
+  if [ "$archived" = "1" ]; then
+    mkdir -p "${fix}/.planning/milestones"
+    touch "${fix}/.planning/milestones/v1.1-ROADMAP.md"
+  fi
+
+  # Seed live signal when a stage is provided.
+  if [ -n "$stage" ]; then
+    local ts=$(( $(date +%s) - age ))
+    printf '%s %s %s %s\n' "$ts" "$stage" "$pnum" "$cmdslug" > "/tmp/gsd-cmd-${sid}"
+  fi
+
+  printf '%s' "$fix"
+}
+
+# Clean up a g_seed fixture (mirrors p5_cleanup shape).
+g_cleanup() {
+  local sid="$1"
+  rm -rf "/tmp/${sid}-fixture"
+  rm -f "/tmp/gsd-cmd-${sid}" "/tmp/gsd-live-${sid}" "/tmp/gsd-wave-${sid}" \
+        "/tmp/gsd-pkgver-${sid}" "/tmp/gsd-powerline-${sid}" "/tmp/gsd-git-${sid}" \
+        "/tmp/gsd-alerts-${sid}" "/tmp/${sid}-input.json"
+}
+
 # ---- D-10: COMPAT lock — bash 3.2+ on macOS ----
 bver="$(bash --version 2>/dev/null | head -1)"
 echo "$bver" | grep -qE 'version (3\.2|[4-9])' || fail "bash version not 3.2+: $bver"
 
-# ---- D-09: PALETTE lock — exact 9-color set ----
+# ---- D-09: PALETTE lock — exact 10-color set ----
 # Note (W2 — checker-revision 2026-05-30): ROADMAP success criterion #5 lists
 # only 6 colors (omits 231). The authoritative palette per PROJECT.md PALETTE-01
 # is the 7-color set below; 231 is "pure white" used for block titles only.
 # v1.2 extension: 173 (Anthropic-brand orange, Context title) + 117 (GSD-brand
 # blue, GSD title) added as title-only hues. The locked 7 remain unchanged.
-expected_palette='38;5;114,38;5;117,38;5;141,38;5;173,38;5;178,38;5;203,38;5;231,38;5;240,38;5;252,'
+# v1.2 GSD-block redesign (quick-260613-hlq T1): 209 (red-orange) added for the
+# /gsd-debug ⌖ glyph — brand-hue convention follows YELc/GRNc for Quick/Fast.
+expected_palette='38;5;114,38;5;117,38;5;141,38;5;173,38;5;178,38;5;203,38;5;209,38;5;231,38;5;240,38;5;252,'
 actual_palette="$(grep -oE '38;5;[0-9]+' "$STATUS" | sort -u | tr '\n' ',')"
 [ "$actual_palette" = "$expected_palette" ] || fail "palette mismatch — got '$actual_palette' expected '$expected_palette'"
 
@@ -525,24 +605,16 @@ grep -qE 'behind:.*conflict:.*detached:.*no_upstream:.*rebasing:.*merging:' "/tm
   fail "P5.9: cache file format mismatch — expected 6 keys (behind/conflict/detached/no_upstream/rebasing/merging): $(cat /tmp/gsd-git-${sid})"
 p5_cleanup "$sid"
 
-# ---- W3 (checker-revision 2026-05-30): Wave-segment render path ----
-# TreSur smoke test runs in idle, so the Wave segment never renders during the
-# main D-07 check. Synthesize an Execute cmd + wave fixture and assert W<n>/<m>
-# (and Pl<n>/<m> when both signals are present) appear in cascade output.
-# This catches wave-plumbing regressions that the idle smoke test cannot.
-w3sid="ship-gate-w3-$$"
-rm -f "/tmp/gsd-cmd-${w3sid}" "/tmp/gsd-live-${w3sid}" "/tmp/gsd-wave-${w3sid}"
-# Execute token (livestage=Execute), phase 4, no slug
-printf '%s Execute 4 -\n' "$(date +%s)" > "/tmp/gsd-cmd-${w3sid}"
-# Wave 2 of 5 (fresh timestamp → within 10s TTL)
-printf '%s 2 5\n' "$(date +%s)" > "/tmp/gsd-wave-${w3sid}"
-printf '{"session_id":"%s","workspace":{"current_dir":"/Users/tresur/Documents/TreSure-Hope-Lite"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' "$w3sid" > "/tmp/${w3sid}-input.json"
-w3_out="$(bash "$STATUS" < "/tmp/${w3sid}-input.json" 2>&1)"
-echo "$w3_out" | grep -qE 'W2/5' || fail "W3: W2/5 segment not rendered with Execute+wave fixture: $(printf '%s' "$w3_out" | head -c 400)"
-# Also assert Pl segment matches Task 3 test pattern when the gsd-cmd carries
-# Plan info via STATE.md (TreSur STATE.md body has "Plan: <n> of <m>" for the
-# current phase or not — if not, Pl is correctly absent; we don't hard-require Pl)
-rm -f "/tmp/gsd-cmd-${w3sid}" "/tmp/gsd-live-${w3sid}" "/tmp/gsd-wave-${w3sid}" "/tmp/${w3sid}-input.json"
+# ---- W3 (v1.2 GSD-block redesign, quick-260613-hlq T3): SUPERSEDED ----
+# Pre-v1.2 W3 asserted the wave-cascade segment `W<n>/<m>` rendered in idle/Execute
+# output. v1.2's emit_gsd_block REPLACED the cascade with rail-aligned labeled rows
+# (Milestone / Phase / Stage) per locked design v1.2-gsd-block-redesign-MINIMAL.md.
+# Wave counters were intentionally dropped (not in the new design). The replacement
+# signal — Plan counter — is now asserted by G7 below (mid-flow Execute fixture).
+# W3 is preserved as a no-op tombstone so the test-numbering index stays continuous
+# across the v1.x ship-gate history; the wave-cache plumbing in statusline-gsd.sh
+# still exists for non-emit consumers (subagent-statusline panel, etc.).
+# (no assertions in this block)
 
 # ============================================================================
 # Phase 6: Quota Display & Layout Consolidation tests (P6.1..P6.5 + P6.6)
@@ -920,6 +992,254 @@ p5_cleanup "$sid"
 
 # L12: no-regression check. The full chain above (P5.x + P6.x) passing this point
 # is itself L12 — no separate test fixture required.
+
+# ============================================================================
+# v1.2 GSD-block redesign (quick-260613-hlq T3): G1..G10 (mirror L1..L12 pattern)
+# ============================================================================
+# Locked design: .planning/notes/v1.2-gsd-block-redesign-MINIMAL.md
+# Tests the rail-aligned 3-row labeled layout (Milestone / Phase / Stage) that
+# replaced the legacy single Now: line. Each test uses g_seed() to fixture a
+# STATE.md + optional /tmp/gsd-cmd-<sid> live signal, then asserts on either
+# raw ANSI output (color SGRs) or stripped output (text content).
+
+# ---- G1: Mid-flow normal renders exactly 3 GSD content rows ----
+# Seed: stage=Execute, age=5s. Asserts the count of non-empty rows AFTER
+# the GSD title equals 3 (Milestone + Phase + Stage).
+sid="g1-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5 "v1.1 Context Management Refinements" 5 "Git State Awareness" "2 of 5")"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+gsd_rows="$(count_gsd_rows "$out")"
+[ "$gsd_rows" = "3" ] || fail "G1: expected exactly 3 GSD content rows mid-flow Execute, got ${gsd_rows}: $(printf '%s' "$out" | head -c 400)"
+g_cleanup "$sid"
+
+# ---- G2: Each GSD content row uses the same DG-rail + indent pattern as Context ----
+# Mirrors L2 — match the same SGR sequence (\033[0m\033[38;5;240m│ \033[0m<NBSP>)
+# and assert ≥3 occurrences total (Context Management contributes ≥3 too, so we
+# require ≥6 in raw output: 3 Context + 3 GSD).
+sid="g2-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+out_raw="$(p5_render "$sid" "$fix")"
+bar_count="$(printf '%s' "$out_raw" | grep -cE $'\033\\[0m\033\\[38;5;240m\xe2\x94\x82 \033\\[0m\xc2\xa0')"
+[ "$bar_count" -ge "6" ] || fail "G2: expected ≥6 occurrences of DG-rail + indent (Context ≥3 + GSD ≥3), got ${bar_count}: $(printf '%s' "$out_raw" | head -c 600)"
+g_cleanup "$sid"
+
+# ---- G3: Milestone row format with truncate30 ellipsis ----
+# Fixture milestone_name is 33 chars → truncated to 29 chars + …
+sid="g3-$$"
+g_cleanup "$sid"
+# Use a name >30 chars so the truncate30 branch fires. 33-char name:
+fix="$(g_seed "$sid" "Execute" 5 "v1.1 Context Management Refinements")"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Find the first row after GSD title that starts with "Milestone:" (after the rail glyph).
+milestone_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && /Milestone:/ { print; exit }')"
+echo "$milestone_row" | grep -qE 'Milestone:' || fail "G3: Milestone row missing 'Milestone:' label: $(printf '%s' "$milestone_row" | head -c 200)"
+# The 35-char name truncates to first 29 chars + …  → "v1.1 Context Management Refin…"
+echo "$milestone_row" | grep -qE 'v1\.1 Context Management Refin…' || \
+  fail "G3: Milestone row missing truncate30 ellipsis form 'v1.1 Context Management Refin…': $(printf '%s' "$milestone_row" | head -c 200)"
+g_cleanup "$sid"
+
+# ---- G4: Phase row format with counter ----
+# Fixture: phase_num=5, total_phases=6 → "Phase 5/6" must appear.
+sid="g4-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+phase_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && /Phase:/ { print; exit }')"
+echo "$phase_row" | grep -qE 'Phase:' || fail "G4: Phase row missing 'Phase:' label: $(printf '%s' "$phase_row" | head -c 200)"
+echo "$phase_row" | grep -qE 'Phase 5/6' || fail "G4: 'Phase 5/6' counter missing from Phase row: $(printf '%s' "$phase_row" | head -c 200)"
+g_cleanup "$sid"
+
+# ---- G5: Stage row Active state — rotating glyph + green 114 bold gerund ----
+sid="g5-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+out_raw="$(p5_render "$sid" "$fix")"
+# Find Stage row in raw output (contains "Stage:")
+stage_row_raw="$(printf '%s\n' "$out_raw" | grep 'Stage:' | tail -1)"
+[ -n "$stage_row_raw" ] || fail "G5: no Stage row found in output: $(printf '%s' "$out_raw" | head -c 400)"
+# Active visual: bold + green 114 SGR present
+printf '%s' "$stage_row_raw" | grep -qE $'\033\\[1m\033\\[38;5;114m' || \
+  fail "G5: Active state SGR \\033[1m\\033[38;5;114m missing from Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+# Gerund "Executing" present
+printf '%s' "$stage_row_raw" | strip_ansi | grep -qE 'Executing' || \
+  fail "G5: 'Executing' gerund missing from Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+# One of the spinner glyphs present
+printf '%s' "$stage_row_raw" | strip_ansi | grep -qE '[◐◓◑◒]' || \
+  fail "G5: no spinner glyph (◐◓◑◒) on Active Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+g_cleanup "$sid"
+
+# ---- G6: Stage row Hung state — STATIC ⚠ + red 203 bold, NO spinner ----
+sid="g6-$$"
+g_cleanup "$sid"
+# age=120s > HUNG_SECS=60 → hung state
+fix="$(g_seed "$sid" "Execute" 120)"
+out_raw="$(p5_render "$sid" "$fix")"
+stage_row_raw="$(printf '%s\n' "$out_raw" | grep 'Stage:' | tail -1)"
+[ -n "$stage_row_raw" ] || fail "G6: no Stage row found in hung-state output: $(printf '%s' "$out_raw" | head -c 400)"
+# Hung visual: bold + red 203 SGR present
+printf '%s' "$stage_row_raw" | grep -qE $'\033\\[1m\033\\[38;5;203m' || \
+  fail "G6: Hung state SGR \\033[1m\\033[38;5;203m missing from Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+# Static ⚠ glyph present (U+26A0)
+printf '%s' "$stage_row_raw" | strip_ansi | grep -qE '⚠' || \
+  fail "G6: static ⚠ glyph missing from hung Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+printf '%s' "$stage_row_raw" | strip_ansi | grep -qE 'Executing' || \
+  fail "G6: 'Executing' gerund missing from hung Stage row: $(printf '%s' "$stage_row_raw" | head -c 400)"
+# CRITICALLY: NO spinner glyph on the hung row (⚠ replaces spinner)
+printf '%s' "$stage_row_raw" | strip_ansi | grep -qE '[◐◓◑◒]' && \
+  fail "G6: spinner glyph leaked onto hung Stage row (must be replaced by static ⚠): $(printf '%s' "$stage_row_raw" | head -c 400)"
+g_cleanup "$sid"
+
+# ---- G7: Plan counter ONLY during Execute ----
+# (a) Execute + plan info → Plan 2/5 present on Stage row.
+sid="g7a-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+stage_row="$(printf '%s\n' "$out" | grep 'Stage:' | tail -1)"
+echo "$stage_row" | grep -qE 'Plan 2/5' || fail "G7a: 'Plan 2/5' missing from Execute Stage row: $(printf '%s' "$stage_row" | head -c 400)"
+g_cleanup "$sid"
+
+# (b) Plan stage → NO Plan counter on Stage row.
+sid="g7b-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Plan" 5)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+stage_row="$(printf '%s\n' "$out" | grep 'Stage:' | tail -1)"
+echo "$stage_row" | grep -qE 'Plan [0-9]+/' && \
+  fail "G7b: Plan counter leaked onto Plan-stage Stage row (must only appear during Execute): $(printf '%s' "$stage_row" | head -c 400)"
+g_cleanup "$sid"
+
+# ---- G8: Side-channel replaces Stage row (Quick / Fast / Debug) ----
+# (a) Quick: ⚡ + Quick: label + slug, with YELc SGR on glyph.
+sid="g8a-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Quick" 5 "v1.1 Context Management Refinements" 5 "Git State Awareness" "2 of 5" 0 50 4 6 "260613-hlq-fix-foo")"
+out_raw="$(p5_render "$sid" "$fix")"
+out="$(printf '%s' "$out_raw" | strip_ansi)"
+quick_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && /⚡/ { print; exit }')"
+[ -n "$quick_row" ] || fail "G8a: Quick row with ⚡ glyph missing: $(printf '%s' "$out" | head -c 400)"
+echo "$quick_row" | grep -qE '⚡' || fail "G8a: ⚡ glyph missing from Quick row: $(printf '%s' "$quick_row" | head -c 200)"
+echo "$quick_row" | grep -qE 'Quick:' || fail "G8a: 'Quick:' label missing: $(printf '%s' "$quick_row" | head -c 200)"
+echo "$quick_row" | grep -qE '260613-hlq-fix-foo' || fail "G8a: slug missing from Quick row: $(printf '%s' "$quick_row" | head -c 200)"
+# YELc SGR (178) on the glyph
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;178m⚡' || fail "G8a: YELc 178 SGR not on ⚡ glyph"
+g_cleanup "$sid"
+
+# (b) Fast: » + Fast label, with GRNc SGR on glyph.
+sid="g8b-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Fast" 5)"
+out_raw="$(p5_render "$sid" "$fix")"
+out="$(printf '%s' "$out_raw" | strip_ansi)"
+fast_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && /»/ { print; exit }')"
+[ -n "$fast_row" ] || fail "G8b: Fast row with » glyph missing: $(printf '%s' "$out" | head -c 400)"
+echo "$fast_row" | grep -qE 'Fast' || fail "G8b: 'Fast' label missing: $(printf '%s' "$fast_row" | head -c 200)"
+# GRNc SGR (114) on the glyph
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;114m»' || fail "G8b: GRNc 114 SGR not on » glyph"
+g_cleanup "$sid"
+
+# (c) Debug: ⌖ + Debug label, with ORG_DBG (209) SGR on glyph.
+sid="g8c-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Debug" 5)"
+out_raw="$(p5_render "$sid" "$fix")"
+out="$(printf '%s' "$out_raw" | strip_ansi)"
+debug_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && /⌖/ { print; exit }')"
+[ -n "$debug_row" ] || fail "G8c: Debug row with ⌖ glyph missing: $(printf '%s' "$out" | head -c 400)"
+echo "$debug_row" | grep -qE 'Debug' || fail "G8c: 'Debug' label missing: $(printf '%s' "$debug_row" | head -c 200)"
+# ORG_DBG SGR (209) on the glyph
+printf '%s' "$out_raw" | grep -qE $'\033\\[38;5;209m⌖' || fail "G8c: ORG_DBG 209 SGR not on ⌖ glyph"
+g_cleanup "$sid"
+
+# ---- G9: Collapsed forms (ready-to-ship / last-shipped / mid-roadmapping) ----
+# (a) Ready-to-ship: percent=100, no live → exactly 1 GSD row with "/gsd-complete-milestone".
+sid="g9a-$$"
+g_cleanup "$sid"
+# stage="" → no live signal; percent=100, cdone=6, ctot=6, archived=0
+fix="$(g_seed "$sid" "" 5 "v1.1 Context Management Refinements" 5 "Git State Awareness" "2 of 5" 0 100 6 6)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+gsd_rows="$(count_gsd_rows "$out")"
+[ "$gsd_rows" = "1" ] || fail "G9a: ready-to-ship should collapse to exactly 1 GSD row, got ${gsd_rows}: $(printf '%s' "$out" | head -c 400)"
+ready_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && NF>0 && $0 != "\xe2\x80\x8b" { print; exit }')"
+echo "$ready_row" | grep -qE 'Milestone:' || fail "G9a: 'Milestone:' label missing from ready-to-ship row: $(printf '%s' "$ready_row" | head -c 200)"
+echo "$ready_row" | grep -qE '/gsd-complete-milestone' || fail "G9a: '/gsd-complete-milestone' command missing: $(printf '%s' "$ready_row" | head -c 200)"
+echo "$ready_row" | grep -qE '⇒' || fail "G9a: ⇒ arrow missing from ready-to-ship row: $(printf '%s' "$ready_row" | head -c 200)"
+g_cleanup "$sid"
+
+# (b) Last-shipped: archived=1, no live → exactly 1 GSD row with "/gsd-new-milestone".
+# Block must still be visible (old archived-hide branch is gone).
+sid="g9b-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "" 5 "v1.1 Context Management Refinements" 5 "Git State Awareness" "2 of 5" 1 100 6 6)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Block must be visible
+echo "$out" | grep -qE '◎ GSD Status' || fail "G9b: GSD block hidden when archived (visibility rule v1.2: always visible if STATE.md exists)"
+gsd_rows="$(count_gsd_rows "$out")"
+[ "$gsd_rows" = "1" ] || fail "G9b: last-shipped should collapse to exactly 1 GSD row, got ${gsd_rows}: $(printf '%s' "$out" | head -c 400)"
+shipped_row="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && NF>0 && $0 != "\xe2\x80\x8b" { print; exit }')"
+echo "$shipped_row" | grep -qE 'Last shipped:' || fail "G9b: 'Last shipped:' label missing: $(printf '%s' "$shipped_row" | head -c 200)"
+echo "$shipped_row" | grep -qE '/gsd-new-milestone' || fail "G9b: '/gsd-new-milestone' command missing: $(printf '%s' "$shipped_row" | head -c 200)"
+echo "$shipped_row" | grep -qE '⇒' || fail "G9b: ⇒ arrow missing from last-shipped row: $(printf '%s' "$shipped_row" | head -c 200)"
+g_cleanup "$sid"
+
+# (c) Mid-roadmapping: stage=Roadmap → exactly 2 GSD rows (Milestone + Stage), NO Phase.
+sid="g9c-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Roadmap" 5 "v1.2" 0 "" "" 0 0 0 0)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+gsd_rows="$(count_gsd_rows "$out")"
+[ "$gsd_rows" = "2" ] || fail "G9c: mid-roadmapping should render exactly 2 GSD rows, got ${gsd_rows}: $(printf '%s' "$out" | head -c 400)"
+# Row 1 = Milestone with (creating…)
+row1="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && NF>0 && $0 != "\xe2\x80\x8b" { print; exit }')"
+echo "$row1" | grep -qE 'Milestone:' || fail "G9c: row 1 missing 'Milestone:' label: $(printf '%s' "$row1" | head -c 200)"
+echo "$row1" | grep -qE '\(creating…\)' || fail "G9c: row 1 missing '(creating…)' annotation: $(printf '%s' "$row1" | head -c 200)"
+# Row 2 = Stage with Roadmapping ⇒ Discuss
+row2="$(printf '%s\n' "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen && NF>0 && $0 != "\xe2\x80\x8b" { n++; if (n==2) { print; exit } }')"
+echo "$row2" | grep -qE 'Stage:' || fail "G9c: row 2 missing 'Stage:' label: $(printf '%s' "$row2" | head -c 200)"
+echo "$row2" | grep -qE 'Roadmapping' || fail "G9c: row 2 missing 'Roadmapping' gerund: $(printf '%s' "$row2" | head -c 200)"
+echo "$row2" | grep -qE 'Discuss' || fail "G9c: row 2 missing 'Discuss' next-stage: $(printf '%s' "$row2" | head -c 200)"
+# CRITICALLY: NO Phase row
+echo "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen' | grep -qE 'Phase:' && \
+  fail "G9c: Phase row present in mid-roadmapping output (locked design: Phase row skipped during Roadmap)"
+g_cleanup "$sid"
+
+# ---- G10: Removed-features assertions ----
+# (a) Mid-flow normal output must contain NO 'Next:' literal substring anywhere
+#     AND NO 'N blocker / N UAT / N ToDo' alert counter row.
+sid="g10a-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+echo "$out" | grep -qE 'Next:' && fail "G10a: 'Next:' literal leaked into output (DROP-NEXT-LBL violated): $(printf '%s' "$out" | head -c 400)"
+# Alert counter pattern: '⚠ N blocker' / '⚠ N UAT' / '⚠ N ToDo'
+echo "$out" | grep -qE '⚠ [0-9]+ (blocker|UAT|ToDo)' && \
+  fail "G10a: legacy alert-counter row leaked into GSD block (DROP-ALERTS violated): $(printf '%s' "$out" | head -c 400)"
+g_cleanup "$sid"
+
+# (b) Cross-fixture: STATE.md with TODOs/Blockers sections should NOT trigger
+#     an alert-counter row in the new GSD block (parse_alerts consumer removed).
+sid="g10b-$$"
+g_cleanup "$sid"
+fix="$(g_seed "$sid" "Execute" 5)"
+# Append TODOs + Blockers sections with bullets — would have triggered alerts pre-v1.2
+cat >> "${fix}/.planning/STATE.md" <<'TODO_FIXTURE'
+
+### TODOs
+- fix the foo
+- write the bar
+
+### Blockers
+- waiting on baz
+TODO_FIXTURE
+out="$(p5_render "$sid" "$fix" | strip_ansi)"
+# Block must still be visible
+echo "$out" | grep -qE '◎ GSD Status' || fail "G10b: GSD block hidden despite STATE.md present (visibility regression): $(printf '%s' "$out" | head -c 400)"
+# NO alert-counter row in GSD output
+echo "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen' | grep -qE '⚠ [0-9]+ (blocker|UAT|ToDo)' && \
+  fail "G10b: alert-counter row leaked into GSD block with TODOs/Blockers fixture (parse_alerts consumer should be removed): $(printf '%s' "$out" | head -c 400)"
+g_cleanup "$sid"
 
 # ---- D-08: PERF lock — per-render time budget ----
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
