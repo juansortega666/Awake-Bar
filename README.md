@@ -29,6 +29,26 @@ Two blocks, four lines, no decoding.
 - 5-hour rate-limit window + conversation memory gauge (3-zone color: green / amber / red)
 - 7-day rate-limit window (Max plan only — auto-hides on Pro)
 
+### Git worktrees
+
+Run one agent per worktree — with [Orca](https://orca.computer), `git worktree` by hand, or any other orchestrator — and `basename(cwd)` stops being the project. It's the worktree slug, and the project name disappears from the bar entirely. Awake resolves the real project and shows both:
+
+```
+│  my-project ⑂ payments-refactor · V1.4.0 ●
+```
+
+Left of `⑂` is the project (from the main checkout), right of it is the worktree you're standing in.
+
+When the branch is just the worktree name behind a namespace — the default for orchestrator-generated branches like `you/payments-refactor` — the branch token is dropped, because it repeats what you're already reading. Status flags stay. When the branch says something the worktree name doesn't, it stays:
+
+```
+│  my-project ⑂ mint-rule · V1.4.0 · ⎇ …/disable-mint-condition ●
+```
+
+Long branch names truncate from the *front*, keeping the part that identifies them. `you/some-long-feature-name` renders as `…/some-long-feature-name`, not `you/some-long-fea…`.
+
+In a normal checkout none of this fires — the row renders exactly as it always has.
+
 **GSD Status** — your workflow position when you use the [GSD framework (gsd-pi)](https://github.com/open-gsd/gsd-pi). Awake's GSD block is purpose-built for the GSD project structure (milestones, phases, stages, plans, side-channels):
 - Current milestone name
 - Current phase + position (`Phase 3/7`)
@@ -148,18 +168,12 @@ Linux compatibility is likely but untested — feel free to file an issue.
 bash tests/v1-ship-gate.sh
 ```
 
-The ship-gate runs ~60 tests covering rendering correctness, palette lock, performance budget (<600ms median), and per-state regressions.
+The ship-gate covers rendering correctness, palette lock, performance budget (<600ms median), per-state regressions, worktree identity, and the powerline stale-fallback contract. Everything except the consumer-smoke block builds its own fixtures in `/tmp` — including real `git worktree` and submodule trees — so it runs anywhere with no host setup.
 
-To run smoke tests against your own GSD project as a fixture:
+A handful of tests need a real GSD project to point at. Without one they're skipped and the rest of the suite still runs. To include them:
 
 ```bash
 AWAKE_FIXTURE_PROJECT=/path/to/your/gsd-project bash tests/v1-ship-gate.sh
-```
-
-To skip the fixture-dependent tests entirely:
-
-```bash
-AWAKE_FIXTURE_PROJECT="" bash tests/v1-ship-gate.sh
 ```
 
 ## Acknowledgements

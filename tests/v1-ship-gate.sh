@@ -87,6 +87,7 @@ p5_cleanup() {
   rm -rf "/tmp/${sid}-fixture"
   rm -f "/tmp/gsd-cmd-${sid}" "/tmp/gsd-live-${sid}" "/tmp/gsd-wave-${sid}" \
         "/tmp/gsd-pkgver-${sid}" "/tmp/gsd-powerline-${sid}" "/tmp/gsd-git-${sid}" \
+        "/tmp/gsd-wt-${sid}" \
         "/tmp/${sid}-input.json"
 }
 
@@ -265,13 +266,22 @@ actual_palette="$(grep -oE '38;5;[0-9]+' "$STATUS" | sort -u | tr '\n' ',')"
 # ---- D-07 + D-19: Smoke test vs real GSD consumer + Pl denominator regression ----
 # Requires AWAKE_FIXTURE_PROJECT to point at a real GSD project (default: TreSur).
 # Set AWAKE_FIXTURE_PROJECT="" to skip the consumer-smoke tests entirely.
+#
+# GATE-SCOPE FIX (v1.3): this used to `echo PASS; exit 0` when the env var was
+# unset — which short-circuited the ENTIRE suite. Everything below (P5/P6/P7/G/WT,
+# ~1000 lines, all of it host-independent synthetic fixtures) never ran, so the
+# default invocation `bash tests/v1-ship-gate.sh` always reported PASS having
+# asserted almost nothing. Only the consumer-smoke block genuinely needs a real
+# GSD project, so only THAT block is now conditional.
+smoke_ok=1
 if [ -z "${AWAKE_FIXTURE_PROJECT}" ] || [ ! -f "$TRESUR_STATE" ]; then
-  echo "skip: AWAKE_FIXTURE_PROJECT not set or STATE.md missing — D-07/D-19/V1 smoke tests skipped" >&2
-  echo "v1.2 SHIP GATE: PASS"
-  exit 0
+  smoke_ok=0
+  echo "skip: AWAKE_FIXTURE_PROJECT not set or STATE.md missing — D-07/D-19/V1/L4 consumer-smoke tests skipped (synthetic suite still runs)" >&2
 fi
+if [ "$smoke_ok" = "1" ]; then
 testsid="ship-gate-$$"
-rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}"
+rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}" \
+      "/tmp/gsd-git-${testsid}" "/tmp/gsd-wt-${testsid}" "/tmp/gsd-pkgver-${testsid}"
 printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' "$testsid" "$AWAKE_FIXTURE_PROJECT" > "/tmp/${testsid}-input.json"
 out="$(bash "$STATUS" < "/tmp/${testsid}-input.json" 2>&1)"
 # Required: cascade M{n}/{m} · Ph{n} present — UNLESS the current milestone has
@@ -323,7 +333,8 @@ echo "$v1_out_a" | grep -qE "Version:[[:space:]]*${trspkgver}" && fail "V1.A: le
 # Must appear exactly once (regression guard for multi-line awk splice — see statusline-gsd.sh ~line 100):
 v1a_count="$(echo "$v1_out_a" | grep -cE "V${trspkgver}([^0-9.]|$)")"
 [ "$v1a_count" = "1" ] || fail "V1.A: V${trspkgver} appears ${v1a_count} times, expected exactly 1: $(printf '%s' "$v1_out_a" | head -c 400)"
-rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}" "/tmp/${v1sid_a}-input.json"
+rm -f "/tmp/gsd-cmd-${v1sid_a}" "/tmp/gsd-pkgver-${v1sid_a}" "/tmp/gsd-powerline-${v1sid_a}" \
+      "/tmp/gsd-git-${v1sid_a}" "/tmp/gsd-wt-${v1sid_a}" "/tmp/${v1sid_a}-input.json"
 
 # Branch B — no package.json, no version segment (synthetic tmpdir fixture).
 # A project without package.json (e.g. a Python/Rust/Go project, or claude-tooling itself
@@ -359,7 +370,10 @@ echo "$v1_out_b" | grep -qE " V[0-9v]" && fail "V1.B: V<ver> segment rendered wi
 # Must NOT contain the legacy "Version: v0.9-test" label (Phase-3 fallback was descoped):
 echo "$v1_out_b" | grep -qE "Version:[[:space:]]*v0\.9-test" && fail "V1.B: legacy 'Version: v0.9-test' STATE.md fallback still active — should be off after v1.0 close: $(printf '%s' "$v1_out_b" | head -c 400)"
 rm -rf "${v1b_fixture}"
-rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}" "/tmp/${v1sid_b}-input.json"
+rm -f "/tmp/gsd-cmd-${v1sid_b}" "/tmp/gsd-pkgver-${v1sid_b}" "/tmp/gsd-powerline-${v1sid_b}" \
+      "/tmp/gsd-git-${v1sid_b}" "/tmp/gsd-wt-${v1sid_b}" "/tmp/${v1sid_b}-input.json"
+fi
+# ---- end consumer-smoke block (D-07 / D-19 / V1) ----
 
 # ============================================================================
 # Phase 5 (v1.1) — Git state awareness tests (P5.1..P5.9)
@@ -485,19 +499,60 @@ echo "$out" | sed -n '3p' | grep -qE $'\033\\[38;5;178m' || \
   fail "P5.5b: ámbar 178 not on powerline line: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
-# ---- P5.6a: LAYOUT-02 — branch name >20 chars truncated with U+2026 ----
+# ---- P5.6a: WT-04 — branch truncation is TAIL-anchored (supersedes LAYOUT-02) ----
+# CONTRACT CHANGE (v1.3): LAYOUT-02 locked "branch truncated to 20 chars,
+# left-anchored". Orchestrator-generated branches are all `<owner>/<slug>`, so
+# left-anchoring preserved the SHARED prefix and cut the DISCRIMINATING tail —
+# every Orca branch rendered as `juansortega666/opti…`. The rule is now:
+#   ≤24 chars            → verbatim
+#   >24 chars, has `/`   → `…/<tail>` (tail itself truncated if it still overflows)
+#   >24 chars, no `/`    → left-anchored truncate at 24 (no tail to preserve)
+# The dir-basename half of LAYOUT-02 is UNCHANGED (still truncate20) — see P5.6b.
 sid="ship-gate-p5-6a-$$"
 p5_cleanup "$sid"
 fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
-# Inject a 31-char branch name: "feat/very-long-branch-name-here"
+# Inject a 31-char namespaced branch name: "feat/very-long-branch-name-here"
 p5_seed_powerline "$sid" "⎇ feat/very-long-branch-name-here ●"
 out="$(p5_render "$sid" "$fix")"
-# Expect truncation to "feat/very-long-bran…" (19 chars + U+2026 = 20 visible total)
-echo "$out" | strip_ansi | grep -qE 'feat/very-long-bran…' || \
-  fail "P5.6a: branch not truncated to 19 chars + …: $(printf '%s' "$out" | head -c 400)"
+# Expect `…/` + tail truncated to 22 (BRANCH_BUDGET 24 minus the 2-char `…/` prefix)
+echo "$out" | strip_ansi | grep -qE '…/very-long-branch-name…' || \
+  fail "P5.6a: branch not tail-truncated to '…/very-long-branch-name…': $(printf '%s' "$out" | head -c 400)"
 # The full original name must NOT appear (post-truncation)
 echo "$out" | strip_ansi | grep -qE 'feat/very-long-branch-name-here' && \
   fail "P5.6a: full 31-char branch name still present (truncation did not fire): $(printf '%s' "$out" | head -c 400)"
+# The dropped namespace must NOT survive — that is the whole point of the change.
+echo "$out" | strip_ansi | grep -qE 'feat/very-long-bran' && \
+  fail "P5.6a: left-anchored form leaked (old LAYOUT-02 behavior): $(printf '%s' "$out" | head -c 400)"
+p5_cleanup "$sid"
+
+# ---- P5.6a-2: WT-04 — branch at or under budget is returned verbatim ----
+# Guards the regression risk of the rule change: short and mid-length branches
+# (`main`, `feat/login`, and a 24-char namespaced one) must be untouched.
+sid="ship-gate-p5-6a2-$$"
+for _b in "main" "feat/login" "release/2026-05-30-rc1"; do
+  p5_cleanup "$sid"
+  fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+  p5_seed_powerline "$sid" "⎇ ${_b} ●"
+  out="$(p5_render "$sid" "$fix")"
+  echo "$out" | strip_ansi | grep -qF "⎇ ${_b} " || \
+    fail "P5.6a-2: branch '${_b}' (${#_b} chars, ≤24) was altered: $(printf '%s' "$out" | head -c 400)"
+  echo "$out" | strip_ansi | grep -qF '…' && \
+    fail "P5.6a-2: branch '${_b}' picked up an ellipsis it should not have: $(printf '%s' "$out" | head -c 400)"
+done
+p5_cleanup "$sid"
+
+# ---- P5.6a-3: WT-04 — long branch with NO `/` stays left-anchored ----
+# No namespace to strip → no tail to privilege → plain truncate at the budget.
+sid="ship-gate-p5-6a3-$$"
+p5_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ averyveryverylongflatbranchname ●"
+out="$(p5_render "$sid" "$fix")"
+# 32 chars → first 23 + … = 24 visible
+echo "$out" | strip_ansi | grep -qE 'averyveryverylongflatbr…' || \
+  fail "P5.6a-3: flat long branch not left-truncated at 24: $(printf '%s' "$out" | head -c 400)"
+echo "$out" | strip_ansi | grep -qE '…/' && \
+  fail "P5.6a-3: '…/' tail form applied to a branch with no namespace: $(printf '%s' "$out" | head -c 400)"
 p5_cleanup "$sid"
 
 # ---- P5.6b: LAYOUT-02 — dir basename >20 chars truncated, model untouched ----
@@ -819,6 +874,11 @@ p5_cleanup "$sid"
 # ---- L4: line 2 (dir/V/git row) contains dir, V<ver>, ⎇ <branch> in order ----
 # Uses the configured AWAKE_FIXTURE_PROJECT (real package.json with .version) to
 # confirm SPLICE-01 fix works on both warm (cache present) AND cold (no cache) paths.
+# CONSUMER-DEPENDENT (v1.3): asserts a V<ver> segment, which requires a real
+# package.json — so it belongs to the same smoke scope as D-07/D-19/V1. It sat
+# outside the guard only because the guard used to `exit 0` and nothing after
+# line 276 ever ran.
+if [ "$smoke_ok" = "1" ]; then
 v12sid_a="v12-l4-warm-$$"
 fixture_dir="$(basename "$AWAKE_FIXTURE_PROJECT")"
 rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}"
@@ -845,7 +905,10 @@ pos_glyph="$(printf '%s' "$dirgit_row" | grep -bE -o '⎇' | head -1 | cut -d: -
   fail "L4 (warm): dir/V/⎇ missing from dir-git row — SPLICE-01 broken on warm path: $(printf '%s' "$dirgit_row" | head -c 400)"
 [ "$pos_dir" -lt "$pos_ver" ] && [ "$pos_ver" -lt "$pos_glyph" ] || \
   fail "L4 (warm): dir(${pos_dir}) → V(${pos_ver}) → ⎇(${pos_glyph}) order violated: $(printf '%s' "$dirgit_row" | head -c 400)"
-rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}" "/tmp/${v12sid_a}-input.json"
+rm -f "/tmp/gsd-cmd-${v12sid_a}" "/tmp/gsd-pkgver-${v12sid_a}" "/tmp/gsd-powerline-${v12sid_a}" \
+      "/tmp/gsd-git-${v12sid_a}" "/tmp/gsd-wt-${v12sid_a}" "/tmp/${v12sid_a}-input.json"
+fi
+# ---- end L4 (consumer-dependent) ----
 
 # ---- L5: line 3 (block + ctxseg row) starts with `N% used ↻` (no leading `§`)
 #          and contains ` · ▓` (the Memory gauge with at least one filled cell
@@ -1253,7 +1316,216 @@ echo "$out" | awk '/^◎ GSD Status/ { seen=1; next } seen' | grep -qE '⚠ [0-9
   fail "G10b: alert-counter row leaked into GSD block with TODOs/Blockers fixture (parse_alerts consumer should be removed): $(printf '%s' "$out" | head -c 400)"
 g_cleanup "$sid"
 
+# ============================================================================
+# WT: worktree identity + powerline stale fallback (v1.3)
+# ============================================================================
+# Context: a multi-worktree orchestrator (Orca) runs one Claude process per git
+# worktree at ~/orca/workspaces/<Project>/<slug>. Powerline's `directory` segment
+# is basename(cwd) = the SLUG, so the project name vanished from the bar and the
+# branch column repeated the slug behind an orchestrator prefix.
+# These tests use REAL git worktrees (the detection is `git rev-parse
+# --git-common-dir`, which no synthetic .git directory can fake).
+
+# Build a real repo + linked worktree. Echoes the WORKTREE path on stdout.
+# Layout: /tmp/<sid>-wtroot/<project>/       ← main checkout
+#         /tmp/<sid>-wtroot/wt/<slug>/       ← linked worktree on <branch>
+wt_fixture() {
+  local sid="$1" project="$2" slug="$3" branch="$4"
+  local root="/tmp/${sid}-wtroot" main="/tmp/${sid}-wtroot/${project}"
+  rm -rf "$root"
+  mkdir -p "$main"
+  git -C "$main" init -q >/dev/null 2>&1
+  git -C "$main" config user.email 'gate@test' >/dev/null 2>&1
+  git -C "$main" config user.name  'gate'      >/dev/null 2>&1
+  echo seed > "${main}/seed.txt"
+  git -C "$main" add -A >/dev/null 2>&1
+  git -C "$main" commit -qm init >/dev/null 2>&1
+  git -C "$main" worktree add -q -b "$branch" "${root}/wt/${slug}" >/dev/null 2>&1
+  printf '%s' "${root}/wt/${slug}"
+}
+wt_main_path() { printf '/tmp/%s-wtroot' "$1"; }
+wt_cleanup() { p5_cleanup "$1"; rm -rf "/tmp/${1}-wtroot"; }
+
+# Seed a full powerline line 1 (dir segment + git segment), mirroring the exact
+# shape real @owloops/claude-powerline emits:
+#   \e[0m\e[49m\e[38;2;208;208;208m <dir> \e[0m\e[49m\e[49m\e[49m\e[38;2;135;215;135m ⎇ <branch> <flag> \e[0m\e[49m\e[0m
+wt_seed_powerline() {
+  local sid="$1" dir="$2" branch="$3" flag="${4:-●}" E
+  E=$'\033'
+  printf '%s\n' "${E}[0m${E}[49m${E}[38;2;208;208;208m ${dir} ${E}[0m${E}[49m${E}[49m${E}[49m${E}[38;2;135;215;135m ⎇ ${branch} ${flag} ${E}[0m${E}[49m${E}[0m" \
+    > "/tmp/gsd-powerline-${sid}"
+  touch "/tmp/gsd-powerline-${sid}"
+}
+
+# ---- WT-A: linked worktree renders `<project> ⑂ <worktree>` ----
+sid="ship-gate-wt-a-$$"
+wt_cleanup "$sid"
+wtpath="$(wt_fixture "$sid" 'HopeLite' 'optimizacion-de-flujos' 'someowner/optimizacion-de-flujos')"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+touch "/tmp/gsd-git-${sid}"
+wt_seed_powerline "$sid" 'optimizacion-de-flujos' 'someowner/optimizacion-de-flujos'
+out="$(p5_render "$sid" "$wtpath")"
+echo "$out" | strip_ansi | grep -qF 'HopeLite ⑂ optimizacion-de-flujos' || \
+  fail "WT-A: identity token missing — expected 'HopeLite ⑂ optimizacion-de-flujos': $(printf '%s' "$out" | head -c 400)"
+wt_cleanup "$sid"
+
+# ---- WT-B: branch collapses when its tail restates the worktree name ----
+# Same fixture as WT-A. The `⎇` token must be GONE (it repeats the slug) while
+# the dirty flag ● must SURVIVE — the flags are the git segment's real payload.
+sid="ship-gate-wt-b-$$"
+wt_cleanup "$sid"
+wtpath="$(wt_fixture "$sid" 'HopeLite' 'optimizacion-de-flujos' 'someowner/optimizacion-de-flujos')"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+touch "/tmp/gsd-git-${sid}"
+wt_seed_powerline "$sid" 'optimizacion-de-flujos' 'someowner/optimizacion-de-flujos'
+out="$(p5_render "$sid" "$wtpath")"
+wt_row="$(echo "$out" | strip_ansi | sed -n '3p')"
+echo "$wt_row" | grep -qF '⎇' && \
+  fail "WT-B: branch token survived a redundant branch (should collapse): [$wt_row]"
+echo "$wt_row" | grep -qF 'someowner' && \
+  fail "WT-B: orchestrator branch prefix still rendered: [$wt_row]"
+echo "$wt_row" | grep -qF '●' || \
+  fail "WT-B: dirty flag lost when the branch token collapsed: [$wt_row]"
+# The orphaned `·` separator must go with it — no `· ●` dangling dot.
+echo "$wt_row" | grep -qE '· *●' && \
+  fail "WT-B: orphaned separator left before the flag: [$wt_row]"
+wt_cleanup "$sid"
+
+# ---- WT-C: branch SURVIVES when its tail differs from the worktree name ----
+# Worktree `regla-de-negocio-mint` running `feature/disable-mint-condition` —
+# two independent facts, both must render. Branch takes the WT-04 tail form.
+sid="ship-gate-wt-c-$$"
+wt_cleanup "$sid"
+wtpath="$(wt_fixture "$sid" 'HopeLite' 'regla-de-negocio-mint' 'feature/disable-mint-condition')"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+touch "/tmp/gsd-git-${sid}"
+wt_seed_powerline "$sid" 'regla-de-negocio-mint' 'feature/disable-mint-condition'
+out="$(p5_render "$sid" "$wtpath")"
+wt_row="$(echo "$out" | strip_ansi | sed -n '3p')"
+echo "$wt_row" | grep -qF 'HopeLite ⑂ regla-de-negocio-mint' || \
+  fail "WT-C: identity token missing: [$wt_row]"
+echo "$wt_row" | grep -qF '⎇ …/disable-mint-condition' || \
+  fail "WT-C: divergent branch was collapsed or mis-truncated (expected '⎇ …/disable-mint-condition'): [$wt_row]"
+wt_cleanup "$sid"
+
+# ---- WT-D: MAIN checkout is untouched — no ⑂, branch intact ----
+# Regression guard: the whole feature must be inert outside a linked worktree.
+sid="ship-gate-wt-d-$$"
+wt_cleanup "$sid"
+wt_fixture "$sid" 'HopeLite' 'unused-slug' 'someowner/unused-slug' >/dev/null
+mainpath="$(wt_main_path "$sid")/HopeLite"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+touch "/tmp/gsd-git-${sid}"
+wt_seed_powerline "$sid" 'HopeLite' 'main'
+out="$(p5_render "$sid" "$mainpath")"
+wt_row="$(echo "$out" | strip_ansi | sed -n '3p')"
+echo "$wt_row" | grep -qF '⑂' && \
+  fail "WT-D: fork glyph rendered in a MAIN checkout: [$wt_row]"
+echo "$wt_row" | grep -qF '⎇ main' || \
+  fail "WT-D: branch token lost in a MAIN checkout: [$wt_row]"
+wt_cleanup "$sid"
+
+# ---- WT-E: submodule-shaped common-dir must NOT be read as a worktree ----
+# A submodule's --git-common-dir is `<super>/.git/modules/<name>`; dirname would
+# yield the meaningless "modules". The `*/.git` guard has to reject it.
+sid="ship-gate-wt-e-$$"
+wt_cleanup "$sid"
+wtroot="/tmp/${sid}-wtroot"
+rm -rf "$wtroot"; mkdir -p "${wtroot}/super" "${wtroot}/sub"
+git -C "${wtroot}/sub" init -q >/dev/null 2>&1
+git -C "${wtroot}/sub" config user.email 'gate@test' >/dev/null 2>&1
+git -C "${wtroot}/sub" config user.name 'gate' >/dev/null 2>&1
+echo s > "${wtroot}/sub/s.txt"
+git -C "${wtroot}/sub" add -A >/dev/null 2>&1; git -C "${wtroot}/sub" commit -qm s >/dev/null 2>&1
+git -C "${wtroot}/super" init -q >/dev/null 2>&1
+git -C "${wtroot}/super" config user.email 'gate@test' >/dev/null 2>&1
+git -C "${wtroot}/super" config user.name 'gate' >/dev/null 2>&1
+echo x > "${wtroot}/super/x.txt"
+git -C "${wtroot}/super" add -A >/dev/null 2>&1; git -C "${wtroot}/super" commit -qm x >/dev/null 2>&1
+# `-c protocol.file.allow=always` must be a COMMAND-LINE override: git ≥2.38 blocks
+# file:// submodule transport, and a repo-level `git config` entry is not consulted
+# for the clone the `submodule add` performs.
+if git -c protocol.file.allow=always -C "${wtroot}/super" submodule add -q "${wtroot}/sub" vendor >/dev/null 2>&1; then
+  printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' > "/tmp/gsd-git-${sid}"
+  touch "/tmp/gsd-git-${sid}"
+  wt_seed_powerline "$sid" 'vendor' 'main'
+  out="$(p5_render "$sid" "${wtroot}/super/vendor")"
+  wt_row="$(echo "$out" | strip_ansi | sed -n '3p')"
+  echo "$wt_row" | grep -qF '⑂' && \
+    fail "WT-E: submodule mis-detected as a worktree: [$wt_row]"
+  echo "$wt_row" | grep -qF 'modules' && \
+    fail "WT-E: submodule internal path leaked into the identity token: [$wt_row]"
+else
+  echo "WT-E: submodule fixture unavailable (git refused file:// submodule) — skipped" >&2
+fi
+wt_cleanup "$sid"
+
+# ---- WT-F: powerline stale fallback — rows 1-2 must not blank ----
+# The npx call is the ONLY source for model/dir/version/branch/block/weekly. When
+# it returns empty (offline `@latest` check, node spawn contention under a
+# multi-agent orchestrator), the bar used to emit EMPTY RAILS. Contract now
+# mirrors read_git_state: reuse the cached render up to 60s, blank after that.
+sid="ship-gate-wt-f-$$"
+wt_cleanup "$sid"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+wt_seed_powerline "$sid" 'stalecheck-dir' 'main'
+# Shadow npx with a stub that succeeds but prints nothing (jq et al stay on PATH).
+stubdir="/tmp/${sid}-stub"; rm -rf "$stubdir"; mkdir -p "$stubdir"
+printf '#!/bin/sh\nexit 0\n' > "${stubdir}/npx"; chmod +x "${stubdir}/npx"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$sid" "$fix" > "/tmp/${sid}-input.json"
+
+# Age the cache to ~10s: past the 4s hot window, inside the 60s stale window.
+touch -t "$(date -v-10S +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 seconds ago' +%Y%m%d%H%M.%S)" \
+  "/tmp/gsd-powerline-${sid}" 2>/dev/null
+out="$(PATH="${stubdir}:$PATH" bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1)"
+echo "$out" | strip_ansi | grep -qF 'stalecheck-dir' || \
+  fail "WT-F: identity row blanked at 10s with npx returning empty (stale fallback did not fire): $(printf '%s' "$out" | head -c 300)"
+
+# Age it past 60s: nothing trustworthy left, blanking is the correct outcome.
+touch -t "$(date -v-90S +%Y%m%d%H%M.%S 2>/dev/null || date -d '90 seconds ago' +%Y%m%d%H%M.%S)" \
+  "/tmp/gsd-powerline-${sid}" 2>/dev/null
+out="$(PATH="${stubdir}:$PATH" bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1)"
+echo "$out" | strip_ansi | grep -qF 'stalecheck-dir' && \
+  fail "WT-F: 90s-old powerline cache was still rendered (stale window must expire at 60s): $(printf '%s' "$out" | head -c 300)"
+# Must still exit cleanly and still render the memory gauge (silent-fallback contract).
+echo "$out" | grep -qE '✳ Context Management' || \
+  fail "WT-F: Context Management block disappeared entirely when the cache expired: $(printf '%s' "$out" | head -c 300)"
+rm -rf "$stubdir"
+wt_cleanup "$sid"
+
 # ---- D-08: PERF lock — per-render time budget ----
+# SELF-CONTAINED FIXTURE (v1.3): this section used to reuse `$testsid` and its
+# input.json from the consumer-smoke block. That worked only because the smoke
+# block was unconditional-or-exit; now that it can be skipped, PERF builds its own
+# fixture — the real project when one is configured, a synthetic GSD tree otherwise.
+if [ "$smoke_ok" = "1" ]; then
+  perf_target="$AWAKE_FIXTURE_PROJECT"
+else
+  perf_target="/tmp/ship-gate-perf-$$-fixture"
+  mkdir -p "${perf_target}/.planning"
+  cat > "${perf_target}/.planning/STATE.md" <<'PERFFIXTURE'
+---
+gsd_state_version: 1.0
+milestone: v1.0-perf
+status: executing
+progress:
+  total_phases: 4
+  completed_phases: 1
+  total_plans: 8
+  completed_plans: 2
+  percent: 25
+---
+
+# STATE: PERF fixture
+
+Phase: 2
+Plan: 2
+PERFFIXTURE
+fi
+testsid="ship-gate-perf-$$"
+rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}"
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' \
+  "$testsid" "$perf_target" > "/tmp/${testsid}-input.json"
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
 # to prime the powerline cache (/tmp/gsd-pl-cache) and any other on-disk caches.
 # The first render is the slowest (cold powerline) — without warm-up the boundary
@@ -1302,7 +1574,10 @@ rm -f "$perf_samples_file"
 [ "$median_ms" -le 600 ] || fail "PERF lock — median render time ${median_ms}ms (>600ms ship-gate noise-tolerant budget; per-render p99 production target is <150ms)"
 
 # Cleanup
-rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}" "/tmp/${testsid}-input.json"
+rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}" \
+      "/tmp/gsd-powerline-${testsid}" "/tmp/gsd-git-${testsid}" "/tmp/gsd-wt-${testsid}" \
+      "/tmp/gsd-pkgver-${testsid}" "/tmp/${testsid}-input.json"
+[ "$smoke_ok" = "1" ] || rm -rf "/tmp/ship-gate-perf-$$-fixture"
 
 printf 'v1.2 SHIP GATE: PASS\n'
 exit 0

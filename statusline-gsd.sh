@@ -276,6 +276,97 @@ read_git_state() {
 # Call once on every render
 read_git_state
 
+# ---- worktree identity (WT-01) — project + worktree, 4s hot / 60s stale cache ----
+# WHY: under a multi-worktree orchestrator (Orca creates one git worktree per agent
+# at ~/orca/workspaces/<Project>/<slug> and runs a separate Claude process in each),
+# powerline's `directory` segment renders `basename(cwd)` — i.e. the WORKTREE SLUG.
+# The project identity is lost: six terminals across three projects all show only
+# their slug (`barreleye`, `optimizacion-de-flujos`), and the branch column shows
+# the orchestrator-prefixed branch (`juansortega666/<slug>`), which is redundant
+# with the slug AND truncates to a useless `juansortega666/opti…`. The bar answers
+# "where am I?" with half the answer.
+#
+# DETECTION: `git rev-parse --git-common-dir --show-toplevel` — ONE call, two lines.
+#   main checkout  → common-dir is RELATIVE (".git"), resolves to <top>/.git
+#   linked worktree→ common-dir is the ABSOLUTE path of the MAIN repo's .git
+# So: linked worktree ⟺ resolved common-dir != <top>/.git.
+#   project  = basename(dirname(common-dir))   e.g. /Users/.../Awake-Bar/.git → Awake-Bar
+#   worktree = basename(top)                    e.g. .../barreleye            → barreleye
+#
+# The `*/.git` guard excludes SUBMODULES, whose common-dir is
+# `<super>/.git/modules/<name>` — dirname would yield the meaningless "modules".
+# A submodule is not a worktree and must fall through to the unchanged rendering.
+#
+# Populates 3 globals consumed by the identity splice (WT-02) and the branch
+# collapse (WT-03) further down. wt_is=0 → every downstream block is a no-op and
+# the main-checkout render is byte-identical to pre-WT behavior.
+wt_is=0; wt_project=""; wt_name=""
+
+# Parse a cache line "is|project|name" into the 3 wt_* globals. `|` (not space)
+# because directory names legitimately contain spaces — the space-delimited
+# key:value schema of /tmp/gsd-git-<sid> could not carry them, which is why this
+# lives in its own cache file rather than extending that one.
+_load_wt_cache() {
+  local line="$1"
+  wt_is="${line%%|*}"; line="${line#*|}"
+  wt_project="${line%%|*}"
+  wt_name="${line#*|}"
+  wt_is="${wt_is//[^01]/}"; [ -z "$wt_is" ] && wt_is=0
+  # A truthy flag with an empty half is incoherent — fail closed to main-checkout.
+  { [ "$wt_is" = "1" ] && { [ -z "$wt_project" ] || [ -z "$wt_name" ]; }; } && \
+    { wt_is=0; wt_project=""; wt_name=""; }
+}
+
+# Fresh query. Returns 0 on success (wt_* populated), non-zero on failure so the
+# caller can fall back to a stale cache instead of clobbering good values.
+_query_worktree() {
+  local out common top mainroot
+  out="$(git_with_timeout git -C "$cwd" rev-parse --git-common-dir --show-toplevel 2>/dev/null)"
+  [ -z "$out" ] && return 1
+  common="$(printf '%s\n' "$out" | sed -n '1p')"
+  top="$(printf '%s\n' "$out" | sed -n '2p')"
+  [ -z "$common" ] || [ -z "$top" ] && return 1
+  # Relative common-dir (main checkout) → absolutize against the worktree top.
+  case "$common" in /*) ;; *) common="${top}/${common}" ;; esac
+  common="${common%/.}"     # some git versions emit a trailing "/."
+  common="${common%/}"
+  wt_is=0; wt_project=""; wt_name=""
+  # Main checkout: common-dir IS this tree's .git → nothing to disambiguate.
+  [ "$common" = "${top}/.git" ] && return 0
+  # Submodule/bare/exotic layouts: only a real linked worktree points at a `.git` dir.
+  case "$common" in */.git) ;; *) return 0 ;; esac
+  mainroot="$(dirname "$common")"
+  wt_project="$(basename "$mainroot")"
+  wt_name="$(basename "$top")"
+  if [ -n "$wt_project" ] && [ -n "$wt_name" ]; then wt_is=1; else wt_project=""; wt_name=""; fi
+  return 0
+}
+
+# Same 4s-hot / 60s-stale ladder as read_git_state (CONTEXT.md items 4-5).
+read_worktree_state() {
+  local cache="/tmp/gsd-wt-${session_id}" age=999999 cmtime line
+  if [ -f "$cache" ]; then
+    cmtime="$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null)"
+    [ -n "$cmtime" ] && age=$(( now_epoch - cmtime ))
+  fi
+  if [ "$age" -le 4 ]; then
+    line="$(cat "$cache" 2>/dev/null)" && _load_wt_cache "$line"
+    return 0
+  fi
+  if _query_worktree; then
+    printf '%s|%s|%s' "$wt_is" "$wt_project" "$wt_name" > "$cache" 2>/dev/null || true
+    return 0
+  fi
+  if [ -f "$cache" ] && [ "$age" -le 60 ]; then
+    line="$(cat "$cache" 2>/dev/null)" && _load_wt_cache "$line"
+    return 0
+  fi
+  # No usable cache + query failed → main-checkout defaults already set. Never crash.
+  return 0
+}
+
+read_worktree_state
+
 # ---- 20-char truncation helper (LAYOUT-02) ----
 # Bash 3.2-safe substring truncation with U+2026 ellipsis (3-byte UTF-8).
 # Returns the input unchanged when ≤20 chars; otherwise first 19 chars + …
@@ -305,6 +396,55 @@ truncate30() {
   else
     printf '%s' "$s"
   fi
+}
+
+# ---- parameterized truncation helper (WT-02) ----
+# Same contract as truncate20/truncate30 (≤N visible chars INCLUDING the ellipsis)
+# with the budget passed in. The identity token splits one row across two names
+# (project + worktree) with different budgets, so a fixed-N helper doesn't fit.
+# truncate20/truncate30 are left in place — they are referenced by locked v1.0/v1.2
+# behavior and by the ship gate; this is additive.
+truncate_n() {
+  local s="$1" n="${2:-20}"
+  if [ "${#s}" -gt "$n" ]; then
+    printf '%s…' "${s:0:$(( n - 1 ))}"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+# ---- branch truncation helper (WT-04 — supersedes truncate20 for branches) ----
+# LAYOUT-02 locked "branch truncated to 20 chars, left-anchored". That rule was
+# written before orchestrator-generated branches existed. Orca names every branch
+# `<owner>/<slug>` (e.g. `juansortega666/optimizacion-de-flujos`), so left-anchoring
+# renders `juansortega666/opti…` — the SHARED prefix survives and the DISCRIMINATING
+# tail is what gets cut. Every Orca branch then looks identical in the bar.
+#
+# New rule: budget 24 (was 20). Over budget AND contains `/` → drop the leading
+# path segments and render `…/<tail>`, truncating the tail if it still overflows.
+# Over budget with no `/` → unchanged left-anchored truncate (plain long branch
+# names have no discriminating tail to preserve).
+# Under budget → returned verbatim, so `main`, `develop`, `feat/x` are untouched.
+#
+# 24 rather than 22: it is the smallest budget that renders the realistic
+# namespaced branches whole after the prefix is dropped — `feature/disable-mint-
+# condition` becomes `…/disable-mint-condition` (24) with a SINGLE ellipsis instead
+# of the doubly-elided `…/disable-mint-condit…`. Longer tails still take a second
+# ellipsis; that is correct, the name genuinely does not fit.
+BRANCH_BUDGET=24
+truncate_branch() {
+  local s="$1" tail
+  [ "${#s}" -le "$BRANCH_BUDGET" ] && { printf '%s' "$s"; return; }
+  case "$s" in
+    */*)
+      tail="${s##*/}"
+      # `…/` costs 2 visible chars, so the tail gets BRANCH_BUDGET-2.
+      printf '…/%s' "$(truncate_n "$tail" $(( BRANCH_BUDGET - 2 )))"
+      ;;
+    *)
+      truncate_n "$s" "$BRANCH_BUDGET"
+      ;;
+  esac
 }
 
 # ---- 3-zone color helper (COLOR-02 enabler — single source of truth for thresholds) ----
@@ -340,16 +480,41 @@ zone_color() {
 # session for a few seconds: the dir·git·model·session segments change slowly, while
 # the cheap bash below (context gauge + the GSD line's spinner/pulse) still recomputes
 # every render so the animation stays smooth. TTL 4s keeps git/model reasonably fresh.
+#
+# STALE FALLBACK (WT-05): the npx call is the ONLY source for rows 1-2 (model,
+# dir, version, branch, block%, weekly%). When it returns empty — npx not on
+# PATH, offline registry check on `@latest`, node spawn contention under a
+# multi-agent orchestrator (Orca runs one Claude process per worktree, each
+# firing this statusline on its own refresh tick) — those rows previously
+# rendered as EMPTY RAILS: the whole Context Management block blanked out.
+# Fix mirrors read_git_state's Branch 3 exactly: on empty query result, reuse
+# the cached render up to 60s old rather than blanking. Silent (ROBUST-02) —
+# no staleness marker; 60s-old identity beats no identity.
+# TTL ladder:
+#   age ≤ 4s              → hot cache, skip npx entirely
+#   age > 4s, npx ok      → use fresh, refresh cache
+#   age > 4s, npx empty, age ≤ 60s → reuse stale cache (do NOT blank)
+#   age > 60s, npx empty OR no cache → empty (unchanged — nothing to fall back to)
 plcache="/tmp/gsd-powerline-${session_id}"
 line1=""
+plage=999999
 if [ -f "$plcache" ]; then
   pmtime="$(stat -f %m "$plcache" 2>/dev/null || stat -c %Y "$plcache" 2>/dev/null)"
-  [ -n "$pmtime" ] && [ "$(( now_epoch - pmtime ))" -le 4 ] && line1="$(cat "$plcache")"
+  [ -n "$pmtime" ] && plage=$(( now_epoch - pmtime ))
+  [ "$plage" -le 4 ] && line1="$(cat "$plcache")"
 fi
 if [ -z "$line1" ]; then
   line1="$(printf '%s' "$input" \
     | npx -y @owloops/claude-powerline@latest --config="$SCRIPT_DIR/claude-powerline.json" 2>/dev/null)"
-  printf '%s' "$line1" > "$plcache" 2>/dev/null || true
+  if [ -n "$line1" ]; then
+    printf '%s' "$line1" > "$plcache" 2>/dev/null || true
+  elif [ -f "$plcache" ] && [ "$plage" -le 60 ]; then
+    # npx failed/empty — reuse the stale render instead of blanking rows 1-2.
+    # Deliberately does NOT touch the cache mtime: the 60s window keeps counting
+    # from the last GOOD render, so a persistent npx failure decays to empty
+    # after a minute rather than pinning a forever-stale bar.
+    line1="$(cat "$plcache" 2>/dev/null)"
+  fi
 fi
 
 # ---- splice "V <pkgver>" between directory and git segments (SPLICE-01) ----
@@ -509,7 +674,37 @@ model_text="$(printf '%s' "$line1" | sed -nE '2{ s/[◱◑].*$//; s/✱ //; s/[[
 # inserts a `-\e[49m\e[49m\e[49m` boundary marker which would shadow our
 # extraction anchor on subsequent boundaries.
 raw_dir="$(printf '%s' "$line1" | sed -n "s|.*${esc}\[38[^m]*m \([A-Za-z0-9._/-][A-Za-z0-9._ /-]*[A-Za-z0-9._/-]\) ${esc}.*|\1|p" | head -1)"
-if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
+
+# ---- WT-02: worktree identity splice — `<project> ⑂ <worktree>` ----
+# In a linked worktree, powerline's dir token is the worktree SLUG and the project
+# name appears nowhere on the bar. Replace the single dir token with both names,
+# joined by ⑂ (U+2442, fork). Budgets: project 18, worktree 22 — the row also
+# carries V<ver> and (when it survives WT-03) the branch, so the identity token is
+# capped at 18+3+22 = 43 visible chars.
+#
+# COLOR: the glyph takes DG (240), the same hue as the `·` segment separators the
+# transform below emits — one visual language for "this is a divider". Both names
+# stay in powerline's OWN dir SGR, recaptured here and re-emitted after the glyph
+# so project and worktree render in one identical shade (powerline uses truecolor
+# 38;2;208;208;208 for `directory`; hardcoding LG/252 instead would make the two
+# halves visibly different greys). No new palette entry is introduced.
+#
+# MUST run before the separator transform below, same as the truncation it replaces.
+if [ "$wt_is" = "1" ] && [ -n "$raw_dir" ]; then
+  # Recapture the dir segment's opening SGR so the glyph can hand the color back.
+  wt_dir_sgr="$(printf '%s' "$line1" | sed -n "s|.*\(${esc}\[38[^m]*m\) ${raw_dir} ${esc}.*|\1|p" | head -1)"
+  [ -z "$wt_dir_sgr" ] && wt_dir_sgr="$LG"
+  if [ "$wt_project" = "$wt_name" ]; then
+    # Degenerate (project and worktree share a name) — one token, no glyph.
+    wt_ident="$(truncate_n "$wt_project" 22)"
+  else
+    wt_ident="$(truncate_n "$wt_project" 18) ${DG}⑂${wt_dir_sgr} $(truncate_n "$wt_name" 22)"
+  fi
+  # First occurrence only (no /g): the dir token precedes the git segment on
+  # physical line 1, and the slug frequently recurs inside the branch name
+  # (`juansortega666/<slug>`) — a global replace would corrupt the branch token.
+  line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${wt_ident}|")"
+elif [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
   trunc_dir="$(truncate20 "$raw_dir")"
   # Use | as delimiter — paths can contain slashes.
   line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${trunc_dir}|")"
@@ -588,10 +783,40 @@ fi
 if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" ]; then
   # Extract the branch name from $line1 (between "⎇ " and the next " " or symbol)
   raw_branch="$(printf '%s' "$line1" | sed -n 's/.*⎇ \([^ ↑↓●'"$esc"']*\).*/\1/p' | head -1)"
-  if [ -n "$raw_branch" ] && [ "${#raw_branch}" -gt 20 ]; then
-    trunc_branch="$(truncate20 "$raw_branch")"
-    # Use | as delimiter — branch names can contain slashes (feat/foo, fix/bar).
-    line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch}|⎇ ${trunc_branch}|")"
+  if [ -n "$raw_branch" ]; then
+    # ---- WT-03: collapse the branch token when it merely restates the worktree ----
+    # Orca derives the branch from the worktree slug (`<owner>/<slug>`), so in the
+    # common case the branch column repeats what the identity token already says.
+    # When the branch's LAST path segment equals the worktree name, drop `⎇ <branch>`
+    # and keep the trailing status flags (✓ / ● / ↑N / ↓N / conflict / no-remote) —
+    # those are the only bits the git segment still contributes.
+    # When the tail DIFFERS the branch is real information (e.g. worktree
+    # `regla-de-negocio-mint` running `feature/disable-mint-condition`) and stays.
+    # Also drops the now-orphaned `·` separator that preceded the git segment, so
+    # the row reads `<project> ⑂ <worktree> · V<ver> ●` rather than `… · V<ver> · ●`.
+    if [ "$wt_is" = "1" ] && [ "${raw_branch##*/}" = "$wt_name" ]; then
+      line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch} ||")"
+      # The separator transform already ran, so the orphan is a literal `·` in DG
+      # followed by the triple-reset and the git segment's own SGR run. Strip ONLY
+      # the `·` and its two SGRs, keeping the color opener (and therefore the flag's
+      # green/amber/red) intact.
+      # Anchored on the FLAG that now follows (✓ ● ↑ ↓) rather than on an occurrence
+      # index: the row carries one separator when there is no package.json and two
+      # when V<ver> is spliced, so `s///2` would miss the no-version case. The other
+      # separator is always followed by `V`, never by a flag glyph — so this is
+      # unambiguous either way.
+      # Replacement drops the space too: the dir/V token already ends with powerline's
+      # own trailing pad, so re-emitting the git segment's leading pad would render a
+      # visible double space before the flag.
+      line1="$(printf '%s' "$line1" | sed "s|${esc}\[38;5;240m·${esc}\[0m${esc}\[49m${esc}\[49m${esc}\[49m\(\(${esc}\[[0-9;]*m\)*\) \([✓●↑↓]\)|\1\3|")"
+    elif [ "${#raw_branch}" -gt "$BRANCH_BUDGET" ]; then
+      # WT-04: tail-anchored truncation (see truncate_branch) — supersedes the
+      # LAYOUT-02 left-anchored truncate20 for branch names only. The dir basename
+      # (non-worktree path above) still uses truncate20 unchanged.
+      trunc_branch="$(truncate_branch "$raw_branch")"
+      # Use | as delimiter — branch names can contain slashes (feat/foo, fix/bar).
+      line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch}|⎇ ${trunc_branch}|")"
+    fi
   fi
 fi
 
