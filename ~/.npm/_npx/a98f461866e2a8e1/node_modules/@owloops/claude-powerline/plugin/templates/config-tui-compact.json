@@ -1,0 +1,48 @@
+{
+  "theme": "replace:THEME",
+  "display": {
+    "style": "tui",
+    "charset": "replace:CHARSET",
+    "colorCompatibility": "auto",
+    "autoWrap": true,
+    "tui": {
+      "fitContent": true,
+      "minWidth": 30,
+      "padding": { "horizontal": 1 },
+      "separator": { "column": "" },
+      "title": {
+        "left": "{model}",
+        "right": "{dir}"
+      },
+      "breakpoints": [
+        {
+          "minWidth": 0,
+          "areas": [
+            "git.icon   git.headVal   .            git.working",
+            "---",
+            "context.icon  context.bar  context.pct  context.tokens"
+          ],
+          "columns": ["auto", "1fr", "auto", "auto"],
+          "align": ["left", "left", "right", "right"]
+        }
+      ]
+    },
+    "lines": [
+      {
+        "segments": {
+          "directory": { "enabled": true, "showBasename": true },
+          "git": { "enabled": true },
+          "model": { "enabled": true },
+          "context": { "enabled": true, "autocompactBuffer": 0 }
+        }
+      }
+    ]
+  },
+  "budget": {
+    "session": { "warningThreshold": 80 }
+  },
+  "modelContextLimits": {
+    "sonnet": 1000000,
+    "opus": 200000
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "theme": "replace:THEME",
+  "display": {
+    "style": "tui",
+    "charset": "replace:CHARSET",
+    "colorCompatibility": "auto",
+    "autoWrap": true,
+    "padding": 0
+  },
+  "budget": {
+    "session": { "warningThreshold": 80 },
+    "today": { "amount": "replace:TODAY_BUDGET", "warningThreshold": 80 }
+  },
+  "modelContextLimits": {
+    "sonnet": 1000000,
+    "opus": 200000
+  }
+}

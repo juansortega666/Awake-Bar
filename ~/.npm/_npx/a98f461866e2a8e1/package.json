@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@owloops/claude-powerline": "^1.30.3"
+  },
+  "_npx": {
+    "packages": [
+      "@owloops/claude-powerline@latest"
+    ]
+  }
+}

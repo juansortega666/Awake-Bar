@@ -1753,6 +1753,114 @@ AWAKE_FORCE_PRUNE=1 bash "$STATUS" < "/tmp/${s}-input.json" >/dev/null 2>&1
 rm -rf "$deep" "$fixd" "/tmp/${s}-input.json"
 p5_cleanup "$s"
 
+# ============================================================================
+# NB: the Context Management block never renders blank (v1.3)
+# ============================================================================
+# Hard invariant, stated by the user: the Context Management block must never hide.
+# "Hidden" includes rendering as bare rails — rows 1 and 2 come only from the npx
+# powerline call, and with no cache to fall back on (a brand-new session whose first
+# render coincides with npx being unavailable) both collapsed to `│` and nothing else.
+# The block was present and said nothing.
+
+# Shadow a binary with a stub that fails, without disturbing the rest of PATH.
+# NOTE: the two `local` statements must stay SEPARATE. `local a="$1" b="...${a}..."`
+# expands every argument BEFORE assigning any of them, so ${a} resolves against the
+# OUTER scope — which under this file's `set -u` is an unbound variable that kills the
+# function and returns an empty path. An empty path in PATH="${nbdir}:$PATH" means the
+# current directory, so the stub silently never applied and the tests below passed
+# against a perfectly healthy npx. That is exactly the class of vacuous test these
+# assertions exist to prevent, so it is worth the comment.
+nb_stub() {
+  local name="$1"
+  local d="/tmp/ship-gate-nbstub-${name}-$$"
+  rm -rf "$d"; mkdir -p "$d"
+  printf '#!/bin/sh\nexit 127\n' > "${d}/${name}"; chmod +x "${d}/${name}"
+  printf '%s' "$d"
+}
+# Count rows that carry the rail glyph but no visible text after ANSI is stripped.
+nb_blank_rows() {
+  printf '%s' "$1" | strip_ansi | awk '
+    /^│/ { g = $0; sub(/^│[[:space:]]*/, "", g); if (g == "") n++ }
+    END  { print n + 0 }'
+}
+
+# ---- NB-A: cold cache + no npx still yields a model row and an identity row ----
+s="ship-gate-nb-a-$$"
+p5_cleanup "$s"                                    # guarantees NO powerline cache
+fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+nbdir="$(nb_stub npx)"
+printf '{"session_id":"%s","model":{"display_name":"Opus 5 (1M context)"},"workspace":{"current_dir":"%s"},"context_window":{"used_percentage":30}}' \
+  "$s" "$fixd" > "/tmp/${s}-input.json"
+out="$(PATH="${nbdir}:$PATH" bash "$STATUS" < "/tmp/${s}-input.json" 2>&1)"
+echo "$out" | strip_ansi | grep -qE '^✳ Context Management' || \
+  fail "NB-A: the block title itself is missing: $(printf '%s' "$out" | head -c 200)"
+[ "$(nb_blank_rows "$out")" = "0" ] || \
+  fail "NB-A: block rendered with blank rails and no npx: $(printf '%s' "$out" | strip_ansi | head -c 200)"
+echo "$out" | strip_ansi | sed -n '2p' | grep -qF 'Opus 5 (1M context)' || \
+  fail "NB-A: model row did not fall back to the payload's model name: [$(echo "$out" | strip_ansi | sed -n '2p')]"
+# The basename is longer than the 20-char dir budget, so assert on the prefix that
+# survives truncation rather than on the whole name.
+echo "$out" | strip_ansi | sed -n '3p' | grep -qF 'ship-gate-nb-a' || \
+  fail "NB-A: identity row did not fall back to the directory name: [$(echo "$out" | strip_ansi | sed -n '3p')]"
+rm -rf "$nbdir" "$fixd" "/tmp/${s}-input.json"; p5_cleanup "$s"
+
+# ---- NB-B: the invariant holds with each required binary knocked out ----
+# `sed` is included deliberately: the blank-row detection itself uses sed, so a broken
+# sed must fail TOWARD the fallback rather than toward a blank row.
+for _bin in npx git jq awk stat sed date; do
+  s="ship-gate-nb-b-$$"
+  p5_cleanup "$s"
+  fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+  nbdir="$(nb_stub "$_bin")"
+  printf '{"session_id":"%s","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s"},"context_window":{"used_percentage":30}}' \
+    "$s" "$fixd" > "/tmp/${s}-input.json"
+  out="$(PATH="${nbdir}:$PATH" bash "$STATUS" < "/tmp/${s}-input.json" 2>&1)"
+  echo "$out" | strip_ansi | grep -qE '^✳ Context Management' || \
+    fail "NB-B(${_bin} broken): the Context Management block disappeared: $(printf '%s' "$out" | head -c 200)"
+  [ "$(nb_blank_rows "$out")" = "0" ] || \
+    fail "NB-B(${_bin} broken): block rendered blank rails: $(printf '%s' "$out" | strip_ansi | head -c 200)"
+  rm -rf "$nbdir" "$fixd" "/tmp/${s}-input.json"; p5_cleanup "$s"
+done
+
+# ---- NB-C: the fallback keeps worktree identity, it does not degrade to a slug ----
+# Losing the project name is the exact failure this whole release exists to fix; the
+# no-powerline path must not quietly reintroduce it.
+s="ship-gate-nb-c-$$"
+p5_cleanup "$s"
+wtpath="$(wt_fixture "$s" 'HopeLite' 'some-worktree' 'someowner/other-branch')"
+nbdir="$(nb_stub npx)"
+printf '{"session_id":"%s","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s"},"context_window":{"used_percentage":30}}' \
+  "$s" "$wtpath" > "/tmp/${s}-input.json"
+out="$(PATH="${nbdir}:$PATH" bash "$STATUS" < "/tmp/${s}-input.json" 2>&1)"
+echo "$out" | strip_ansi | grep -qF 'HopeLite ⑂ some-worktree' || \
+  fail "NB-C: fallback identity lost the project name in a worktree: [$(echo "$out" | strip_ansi | sed -n '3p')]"
+# 'someowner/other-branch' is 22 chars — under BRANCH_BUDGET, so it must render
+# WHOLE. Asserting the untruncated form doubles as a guard against the fallback
+# path truncating more eagerly than the powerline path does.
+echo "$out" | strip_ansi | grep -qF '⎇ someowner/other-branch' || \
+  fail "NB-C: fallback identity dropped or over-truncated a branch that differs from the worktree: [$(echo "$out" | strip_ansi | sed -n '3p')]"
+rm -rf "$nbdir" "/tmp/${s}-input.json"; wt_cleanup "$s"
+
+# ---- NB-D: when powerline DOES work, the fallback must stay out of the way ----
+# Guards against the rebuild firing on a healthy render and duplicating the row.
+s="ship-gate-nb-d-$$"
+p5_cleanup "$s"
+fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+printf '%s' 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0 branch:realbranch' > "/tmp/gsd-git-${s}"
+touch "/tmp/gsd-git-${s}"
+wt_seed_powerline "$s" 'powerline-dir' 'powerline-branch'
+printf '{"session_id":"%s","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s"},"context_window":{"used_percentage":30}}' \
+  "$s" "$fixd" > "/tmp/${s}-input.json"
+out="$(bash "$STATUS" < "/tmp/${s}-input.json" 2>&1)"
+nb_row="$(echo "$out" | strip_ansi | sed -n '3p')"
+echo "$nb_row" | grep -qF 'powerline-dir' || \
+  fail "NB-D: healthy powerline output was discarded: [$nb_row]"
+echo "$nb_row" | grep -qF "$(basename "$fixd")" && \
+  fail "NB-D: fallback identity fired on a healthy render and overrode powerline: [$nb_row]"
+echo "$nb_row" | grep -qF 'realbranch' && \
+  fail "NB-D: fallback branch leaked into a healthy powerline row: [$nb_row]"
+rm -rf "$fixd" "/tmp/${s}-input.json"; p5_cleanup "$s"
+
 # ---- D-08: PERF lock — per-render time budget ----
 # SELF-CONTAINED FIXTURE (v1.3): this section used to reuse `$testsid` and its
 # input.json from the consumer-smoke block. That worked only because the smoke

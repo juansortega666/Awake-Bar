@@ -1,0 +1,39 @@
+{
+  "theme": "replace:THEME",
+  "display": {
+    "style": "replace:STYLE",
+    "charset": "replace:CHARSET",
+    "colorCompatibility": "auto",
+    "autoWrap": true,
+    "padding": 1,
+    "lines": [
+      {
+        "segments": {
+          "directory": { "enabled": true, "style": "fish" },
+          "git": { "enabled": true },
+          "model": { "enabled": true },
+          "session": { "enabled": true, "type": "tokens", "costSource": "calculated" }
+        }
+      },
+      {
+        "segments": {
+          "today": { "enabled": true, "type": "cost" },
+          "context": {
+            "enabled": true,
+            "showPercentageOnly": false,
+            "displayStyle": "replace:BAR_STYLE",
+            "autocompactBuffer": 33000
+          }
+        }
+      }
+    ]
+  },
+  "budget": {
+    "session": { "warningThreshold": 80 },
+    "today": { "amount": "replace:TODAY_BUDGET", "warningThreshold": 80 }
+  },
+  "modelContextLimits": {
+    "sonnet": 1000000,
+    "opus": 200000
+  }
+}

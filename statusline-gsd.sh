@@ -160,6 +160,7 @@ git_with_timeout() {
 #   age > 60s, query fail OR no cache → return zero-state defaults
 # Populates 6 globals: gs_behind gs_conflict gs_detached gs_no_upstream gs_rebasing gs_merging
 gs_behind=0; gs_conflict=0; gs_detached=""; gs_no_upstream=0; gs_rebasing=0; gs_merging=0
+gs_branch=""
 
 # Parse a cache line into the 6 gs_* globals. Defensive — bad cache won't crash.
 _load_git_cache() {
@@ -170,6 +171,10 @@ _load_git_cache() {
   gs_no_upstream="${line#*no_upstream:}"; gs_no_upstream="${gs_no_upstream%% *}"
   gs_rebasing="${line#*rebasing:}"; gs_rebasing="${gs_rebasing%% *}"
   gs_merging="${line#*merging:}"; gs_merging="${gs_merging%% *}"
+  # branch: LAST field on purpose — git ref names can never contain a space
+  # (git check-ref-format forbids it), so the space-delimited schema is safe, and
+  # an empty value (detached HEAD) parses to "" exactly like `detached:` does.
+  gs_branch="${line#*branch:}"; gs_branch="${gs_branch%% *}"
   gs_behind="${gs_behind//[^0-9]/}"; [ -z "$gs_behind" ] && gs_behind=0
   gs_conflict="${gs_conflict//[^01]/}"; [ -z "$gs_conflict" ] && gs_conflict=0
   gs_no_upstream="${gs_no_upstream//[^01]/}"; [ -z "$gs_no_upstream" ] && gs_no_upstream=0
@@ -209,10 +214,16 @@ _query_git_state() {
 
   # Reset accumulators
   gs_behind=0; gs_conflict=0; gs_detached=""; gs_no_upstream=0; gs_rebasing=0; gs_merging=0
+  gs_branch=""
 
   # State 1: detached HEAD — symbolic-ref HEAD non-zero exit = detached
   if ! git_with_timeout git -C "$cwd" symbolic-ref --quiet HEAD >/dev/null; then
     gs_detached="$(git_with_timeout git -C "$cwd" rev-parse --short=7 HEAD 2>/dev/null || true)"
+  else
+    # Branch NAME (not just state). Powerline is normally the one that supplies it,
+    # but the never-blank fallback (NB-01) has to be able to draw the identity row
+    # without powerline, so the name is captured and cached here too.
+    gs_branch="$(git_with_timeout git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
 
   # State 2: no-upstream (ahead>0 gate happens at render time in Plan 02)
@@ -250,8 +261,8 @@ _query_git_state() {
 # Write current gs_* values to the cache file. Silent on failure.
 _write_git_cache() {
   local cache="$1"
-  printf 'behind:%s conflict:%s detached:%s no_upstream:%s rebasing:%s merging:%s' \
-    "$gs_behind" "$gs_conflict" "$gs_detached" "$gs_no_upstream" "$gs_rebasing" "$gs_merging" \
+  printf 'behind:%s conflict:%s detached:%s no_upstream:%s rebasing:%s merging:%s branch:%s' \
+    "$gs_behind" "$gs_conflict" "$gs_detached" "$gs_no_upstream" "$gs_rebasing" "$gs_merging" "$gs_branch" \
     > "$cache" 2>/dev/null || true
 }
 
@@ -1166,12 +1177,78 @@ indent=" ${R}${nbsp}"
 # The reset→LG state change around the NBSP is what keeps it from being
 # collapsed by Claude Code's whitespace renderer. Content lands at col 3.
 _row() { printf '%s%s│%s%s%s\n' "$R" "$DG" "$indent" "$LG" "$1"; }
+# ---- NB-01: the Context Management block must never render blank ----
+# Rows 1 and 2 (model, and dir/version/branch) exist ONLY as post-processed powerline
+# output. When the npx call returns nothing AND there is no cache to fall back on —
+# a brand-new session whose very first render coincides with npx being unavailable,
+# offline, or starved under a multi-agent load — both rows collapsed to bare rails:
+#
+#     ✳ Context Management
+#     │
+#     │
+#     │  5 sessions · 2 active · ▓▓▓░░░░░░ 30%
+#
+# The block was technically present and told you nothing. The stale fallback added
+# upstream cannot help here; there is no prior render to reuse.
+#
+# So these rows get rebuilt from data this script already holds, with no dependency on
+# powerline at all: the model name straight off the payload, and the identity assembled
+# from $cwd / $wt_* / $pkgver / the git state (gs_branch is captured and cached for
+# exactly this purpose). Plainer than the powerline render — no ↑N/↓N counters, no
+# dirty marker — but every question the row exists to answer still gets an answer.
+#
+# NOT covered: the 5h window. Powerline does not read it from stdin, it COMPUTES it
+# from usage history, which is not reconstructable cheaply here. Row 3 already has a
+# defined behavior for that (ROBUST-02: collapse to the memory gauge), which is
+# degradation by design rather than a blank.
+_fallback_model() {
+  local m
+  m="$(printf '%s' "$input" | jq -r '.model.display_name // .model.id // empty' 2>/dev/null)"
+  [ -z "$m" ] && m="Claude"
+  printf '%s%s%s' "$LG" "$m" "$R"
+}
+_fallback_identity() {
+  local ident branch out
+  if [ "$wt_is" = "1" ]; then
+    ident="$(truncate_n "$wt_project" 18) ${DG}⑂${LG} $(truncate_n "$wt_name" 22)"
+  else
+    ident="$(truncate20 "$(basename "$cwd")")"
+  fi
+  out="${LG}${ident}${R}"
+  [ -n "$pkgver" ] && out="${out} ${DG}·${R} ${LG}V${pkgver}${R}"
+  # Mirror the transition-state precedence the powerline path uses (detached >
+  # rebasing > merging), then the normal branch — collapsed away when it merely
+  # restates the worktree name, exactly as WT-03 does on the powerline path.
+  if [ -n "$gs_detached" ]; then
+    branch="detached ${gs_detached}"
+  elif [ "$gs_rebasing" = "1" ]; then
+    branch="rebasing"
+  elif [ "$gs_merging" = "1" ]; then
+    branch="merging"
+  elif [ -n "$gs_branch" ]; then
+    if [ "$wt_is" = "1" ] && [ "${gs_branch##*/}" = "$wt_name" ]; then
+      branch=""
+    else
+      branch="⎇ $(truncate_branch "$gs_branch")"
+    fi
+  fi
+  [ -n "$branch" ] && out="${out} ${DG}·${R} ${branch_color}${B}${branch}${R}"
+  printf '%s' "$out"
+}
+
 emit_context_block() {
   title "✳ Context Management" "$ORG"
   # Strip powerline's embedded leading space so all rows align at the same column.
   local model_clean line_a strip="s/^((${esc}\[[0-9;]*m)+) /\\1/"
   model_clean="$(printf '%s' "$model_text" | sed -E "$strip")"
   line_a="$(printf '%s' "$line1" | sed -nE "1{ $strip; p; }")"
+  # NB-01: a row that carries no visible text is indistinguishable from a missing
+  # one. Test on the ANSI-stripped content so a string of bare SGR codes still counts
+  # as empty and triggers the rebuild.
+  [ -z "$(printf '%s' "$model_clean" | sed -E "s/${esc}\[[0-9;]*m//g")" ] && \
+    model_clean="$(_fallback_model)"
+  [ -z "$(printf '%s' "$line_a"     | sed -E "s/${esc}\[[0-9;]*m//g")" ] && \
+    line_a="$(_fallback_identity)"
   _row "$model_clean"
   _row "$line_a"
   # Row 3 = [block%] [fleet] [memory gauge]. Both leading segments are optional, so

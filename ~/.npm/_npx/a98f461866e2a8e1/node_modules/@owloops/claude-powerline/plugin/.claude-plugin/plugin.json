@@ -1,0 +1,11 @@
+{
+  "name": "claude-powerline",
+  "version": "1.0.0",
+  "description": "Claude Powerline statusline setup wizard",
+  "author": {
+    "name": "Owloops"
+  },
+  "repository": "https://github.com/Owloops/claude-powerline",
+  "license": "MIT",
+  "keywords": ["powerline", "statusline", "claude-code", "setup"]
+}

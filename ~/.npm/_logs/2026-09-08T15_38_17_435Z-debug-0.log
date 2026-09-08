@@ -1,0 +1,41 @@
+0 verbose cli /opt/homebrew/Cellar/node/25.9.0_2/bin/node /opt/homebrew/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.12.1
+2 info using node@v25.9.0
+3 silly config load:file:/opt/homebrew/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/tresur/Documents/Awake-Bar/.npmrc
+5 silly config load:file:/Users/tresur/Documents/Awake-Bar/~/.npmrc
+6 silly config load:file:/opt/homebrew/etc/npmrc
+7 verbose title npm exec @owloops/claude-powerline@latest --config=/Users/tresur/Documents/Awake-Bar/claude-powerline.json
+8 verbose argv "exec" "--yes" "--" "@owloops/claude-powerline@latest" "--config=/Users/tresur/Documents/Awake-Bar/claude-powerline.json"
+9 verbose logfile logs-max:10 dir:/Users/tresur/Documents/Awake-Bar/~/.npm/_logs/2026-09-08T15_38_17_435Z-
+10 verbose logfile /Users/tresur/Documents/Awake-Bar/~/.npm/_logs/2026-09-08T15_38_17_435Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+13 http fetch GET 200 https://registry.npmjs.org/@owloops%2fclaude-powerline 63ms (cache miss)
+14 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+15 http fetch GET 200 https://registry.npmjs.org/npm 106ms
+16 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+17 silly idealTree buildDeps
+18 silly fetch manifest @owloops/claude-powerline@1.30.3
+19 silly packumentCache full:https://registry.npmjs.org/@owloops%2fclaude-powerline cache-miss
+20 http fetch GET 200 https://registry.npmjs.org/@owloops%2fclaude-powerline 333ms (cache miss)
+21 silly packumentCache full:https://registry.npmjs.org/@owloops%2fclaude-powerline set size:undefined disposed:false
+22 silly placeDep ROOT @owloops/claude-powerline@1.30.3 OK for:  want: 1.30.3
+23 silly reify moves {}
+24 silly audit bulk request { '@owloops/claude-powerline': [ '1.30.3' ] }
+25 http cache @owloops/claude-powerline@https://registry.npmjs.org/@owloops/claude-powerline/-/claude-powerline-1.30.3.tgz 0ms (cache hit)
+26 silly tarball no local data for @owloops/claude-powerline@https://registry.npmjs.org/@owloops/claude-powerline/-/claude-powerline-1.30.3.tgz. Extracting by manifest.
+27 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 186ms
+28 silly audit report {}
+29 http fetch GET 200 https://registry.npmjs.org/@owloops/claude-powerline/-/claude-powerline-1.30.3.tgz 256ms (cache miss)
+30 verbose cwd /Users/tresur/Documents/Awake-Bar
+31 verbose os Darwin 25.4.0
+32 verbose node v25.9.0
+33 verbose npm  v11.12.1
+34 notice
+34 notice New minor version of npm available! 11.12.1 -> 11.19.1
+34 notice Changelog: https://github.com/npm/cli/releases/tag/v11.19.1
+34 notice To update run: npm install -g npm@11.19.1
+34 notice  { force: true, Symbol(proc-log.meta): true }
+35 verbose exit 0
+36 info ok

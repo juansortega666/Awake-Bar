@@ -1,0 +1,5 @@
+Can you see these icons clearly?
+
+  folder    code    branch   󰚩 robot
+
+If you see boxes or blank spaces instead of icons, choose "No" below.

@@ -68,6 +68,16 @@ It works for any multi-session setup — an orchestrator, `git worktree` by hand
 
 Sessions on other machines don't appear. `/tmp` is local, and this is deliberately not networked.
 
+### The block never goes blank
+
+The Context Management block is a hard invariant: it always renders, and no row is ever left empty.
+
+The model and identity rows normally come from `claude-powerline`, which runs through `npx`. If that call comes back with nothing — offline, not installed, starved under load — Awake first reuses its last good render (up to 60s), and if there isn't one, rebuilds both rows from what it already knows locally: the model name off the status payload, and the identity from the working directory, the worktree, `package.json`, and git. Plainer than the normal render, but it still answers where you are.
+
+The one thing that can't be rebuilt is the 5-hour window — `claude-powerline` computes it from usage history rather than reading it from the payload. That row collapses to the memory gauge, which is its documented behavior anyway.
+
+This is verified against a broken `npx`, `git`, `jq`, `awk`, `stat`, `sed`, and `date`, a bare `PATH`, an unset `HOME`, and malformed or empty input.
+
 Awake also sweeps its own `/tmp/gsd-*` caches once they're more than a day stale. A live session rewrites them every few seconds, so anything that old belongs to a terminal that closed. The sweep is restricted to Awake's own filename prefixes and to the top level of `/tmp`.
 
 **GSD Status** — your workflow position when you use the [GSD framework (gsd-pi)](https://github.com/open-gsd/gsd-pi). Awake's GSD block is purpose-built for the GSD project structure (milestones, phases, stages, plans, side-channels):
