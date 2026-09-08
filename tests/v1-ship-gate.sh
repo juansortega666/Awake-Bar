@@ -41,6 +41,17 @@ STATUS="${REPO}/statusline-gsd.sh"
 AWAKE_FIXTURE_PROJECT="${AWAKE_FIXTURE_PROJECT:-${HOME}/Documents/TreSure-Hope-Lite}"
 TRESUR_STATE="${AWAKE_FIXTURE_PROJECT}/.planning/STATE.md"
 
+# Fleet awareness is OFF for the suite by default (FL tests re-enable it per-render).
+# Two reasons, both load-bearing:
+#   1. Isolation of the OTHER tests. Every render writes a heartbeat, so a ~250-render
+#      suite would otherwise inject hundreds of FRESH heartbeats into the developer's
+#      real /tmp/awake-agents-<uid> — and a live session rendering during the run would
+#      report a wildly inflated fleet.
+#   2. Isolation FROM the developer. Assertions about row content must not shift
+#      because the person running the gate happens to have four tabs open.
+# Net effect: every pre-existing test renders byte-identically to pre-fleet behavior.
+export AWAKE_NO_FLEET=1
+
 fail() {
   printf 'v1.2 SHIP GATE: FAIL — %s\n' "$1"
   exit 1
@@ -1493,6 +1504,142 @@ echo "$out" | grep -qE '✳ Context Management' || \
 rm -rf "$stubdir"
 wt_cleanup "$sid"
 
+# ============================================================================
+# FL: fleet awareness (v1.3)
+# ============================================================================
+# The 5h/7d segments report ACCOUNT-WIDE quota but rendered as if this session were
+# the only spender. Under an orchestrator that runs one `claude` process per
+# worktree, the number is right and the attribution is missing. Each render drops a
+# heartbeat; the bar counts the fresh ones.
+# Every test pins AWAKE_FLEET_DIR to an isolated directory — otherwise the
+# developer's own live sessions would leak into the counts and make these flaky.
+
+# Render with an isolated fleet dir. Echoes full stdout.
+# AWAKE_NO_FLEET=0 re-enables the feature the suite disables globally; AWAKE_FLEET_DIR
+# keeps each test's fleet in its own directory.
+fl_render() {
+  local sid="$1" fix="$2" fdir="$3"
+  printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":42}}' \
+    "$sid" "$fix" > "/tmp/${sid}-input.json"
+  AWAKE_NO_FLEET=0 AWAKE_FLEET_DIR="$fdir" bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1
+}
+# Write a synthetic peer heartbeat: "<epoch> <project> <busy>", aged <age> seconds.
+fl_peer() {
+  local fdir="$1" name="$2" age="$3" busy="$4"
+  mkdir -p "$fdir"
+  printf '%s peerproj %s\n' "$(( $(date +%s) - age ))" "$busy" > "${fdir}/${name}"
+}
+
+# ---- FL-A: a lone session renders NO fleet segment ----
+# The single-session case is the norm; the bar must not grow a segment for it.
+sid="ship-gate-fl-a-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+out="$(fl_render "$sid" "$fix" "$fdir")"
+echo "$out" | strip_ansi | grep -qE '[0-9]+ sessions' && \
+  fail "FL-A: fleet segment rendered for a single session: $(printf '%s' "$out" | head -c 300)"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-B: N live peers + busy split ----
+sid="ship-gate-fl-b-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+fl_peer "$fdir" peer1 2 1
+fl_peer "$fdir" peer2 3 1
+fl_peer "$fdir" peer3 2 0
+fl_peer "$fdir" peer4 4 0
+out="$(fl_render "$sid" "$fix" "$fdir")"   # +1 = this render's own heartbeat
+echo "$out" | strip_ansi | grep -qF '5 sessions' || \
+  fail "FL-B: expected '5 sessions' (4 peers + self): $(printf '%s' "$out" | head -c 300)"
+echo "$out" | strip_ansi | grep -qF '2 active' || \
+  fail "FL-B: expected '2 active' (busy peers): $(printf '%s' "$out" | head -c 300)"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-C: an all-idle fleet drops the `active` half, never renders "0 active" ----
+sid="ship-gate-fl-c-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+fl_peer "$fdir" peer1 2 0
+fl_peer "$fdir" peer2 3 0
+out="$(fl_render "$sid" "$fix" "$fdir")"
+echo "$out" | strip_ansi | grep -qF '3 sessions' || \
+  fail "FL-C: expected '3 sessions': $(printf '%s' "$out" | head -c 300)"
+echo "$out" | strip_ansi | grep -qF 'active' && \
+  fail "FL-C: rendered an 'active' token for an all-idle fleet: $(printf '%s' "$out" | head -c 300)"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-D: heartbeats past the TTL are not counted ----
+# A closed terminal leaves its file behind; only freshness proves a session is alive.
+sid="ship-gate-fl-d-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+fl_peer "$fdir" fresh1 2   1
+fl_peer "$fdir" stale1 90  1
+fl_peer "$fdir" stale2 400 1
+fl_peer "$fdir" future 0   1
+out="$(fl_render "$sid" "$fix" "$fdir")"
+echo "$out" | strip_ansi | grep -qF '3 sessions' || \
+  fail "FL-D: stale heartbeats leaked into the count (expected 3 = fresh1 + future + self): $(printf '%s' "$out" | head -c 300)"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-E: the render actually writes its own heartbeat, in the documented shape ----
+sid="ship-gate-fl-e-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+fl_render "$sid" "$fix" "$fdir" > /dev/null
+[ -f "${fdir}/${sid}" ] || fail "FL-E: no heartbeat written at ${fdir}/${sid}"
+hb="$(cat "${fdir}/${sid}")"
+echo "$hb" | grep -qE '^[0-9]+ [^ ]+ [01]$' || \
+  fail "FL-E: heartbeat shape is not '<epoch> <project> <busy>': [$hb]"
+hb_epoch="$(printf '%s' "$hb" | awk '{print $1}')"
+[ "$(( $(date +%s) - hb_epoch ))" -le 30 ] || \
+  fail "FL-E: heartbeat epoch is not current: [$hb]"
+# A synthetic session id has no transcript, so it must report idle — this is the
+# same path that keeps the busy flag honest when transcript_path can't be resolved.
+echo "$hb" | grep -qE ' 0$' || \
+  fail "FL-E: session with no resolvable transcript reported busy: [$hb]"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-F: AWAKE_NO_FLEET=1 is a full opt-out ----
+# No heartbeat on disk AND no segment rendered, even with a live fleet present.
+sid="ship-gate-fl-f-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p5_seed_powerline "$sid" "⎇ main ✓"
+fl_peer "$fdir" peer1 2 1
+fl_peer "$fdir" peer2 2 1
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":42}}' \
+  "$sid" "$fix" > "/tmp/${sid}-input.json"
+out="$(AWAKE_FLEET_DIR="$fdir" AWAKE_NO_FLEET=1 bash "$STATUS" < "/tmp/${sid}-input.json" 2>&1)"
+echo "$out" | strip_ansi | grep -qE '[0-9]+ sessions' && \
+  fail "FL-F: fleet segment rendered with AWAKE_NO_FLEET=1: $(printf '%s' "$out" | head -c 300)"
+[ -f "${fdir}/${sid}" ] && \
+  fail "FL-F: heartbeat written with AWAKE_NO_FLEET=1 (opt-out must not touch disk)"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ---- FL-G: fleet segment sits on the 5h row, between the quota and the gauge ----
+# Placement is load-bearing: the count is the missing attribution for the percentage
+# immediately to its left. Assert the ORDER, not just presence.
+sid="ship-gate-fl-g-$$"; fdir="/tmp/${sid}-fleet"
+p5_cleanup "$sid"; rm -rf "$fdir"
+fix="$(p5_fixture "$sid" 'behind:0 conflict:0 detached: no_upstream:0 rebasing:0 merging:0' '')"
+p7_seed_powerline "$sid" "⎇ main ✓" "25% (3h 12m)" "47% (4d 3h)"
+fl_peer "$fdir" peer1 2 1
+fl_peer "$fdir" peer2 2 0
+out="$(fl_render "$sid" "$fix" "$fdir")"
+fl_row="$(echo "$out" | strip_ansi | sed -n '4p')"
+echo "$fl_row" | grep -qE '25% used ↻ 3h · 3 sessions · 1 active · .*▓' || \
+  fail "FL-G: 5h row is not '<block> · <fleet> · <gauge>': [$fl_row]"
+# The 7d row (line 5) must stay clean — the fleet token belongs to one row only.
+echo "$out" | strip_ansi | sed -n '5p' | grep -qE 'sessions' && \
+  fail "FL-G: fleet token leaked onto the 7-day row: $(echo "$out" | strip_ansi | sed -n '5p')"
+rm -rf "$fdir"; p5_cleanup "$sid"
+
 # ---- D-08: PERF lock — per-render time budget ----
 # SELF-CONTAINED FIXTURE (v1.3): this section used to reuse `$testsid` and its
 # input.json from the consumer-smoke block. That worked only because the smoke
@@ -1526,6 +1673,16 @@ testsid="ship-gate-perf-$$"
 rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${testsid}"
 printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"context_window":{"used_percentage":50,"remaining_percentage":50}}' \
   "$testsid" "$perf_target" > "/tmp/${testsid}-input.json"
+# The budget must cover the REAL render path, so fleet awareness is switched back on
+# here (the suite disables it globally) against an isolated directory pre-loaded with
+# a plausible fleet — the heartbeat write, the transcript stat, and the aggregating
+# awk all get measured.
+perf_fleet="/tmp/${testsid}-fleet"; rm -rf "$perf_fleet"; mkdir -p "$perf_fleet"
+perf_now="$(date +%s)"
+for _p in 1 2 3 4 5 6; do
+  printf '%s perfproj %s\n' "$perf_now" "$(( _p % 2 ))" > "${perf_fleet}/peer${_p}"
+done
+export AWAKE_NO_FLEET=0 AWAKE_FLEET_DIR="$perf_fleet"
 # W1 (checker-revision 2026-05-30): Run 1 warm-up render BEFORE the timing loop
 # to prime the powerline cache (/tmp/gsd-pl-cache) and any other on-disk caches.
 # The first render is the slowest (cold powerline) — without warm-up the boundary
@@ -1578,6 +1735,8 @@ rm -f "/tmp/gsd-cmd-${testsid}" "/tmp/gsd-live-${testsid}" "/tmp/gsd-wave-${test
       "/tmp/gsd-powerline-${testsid}" "/tmp/gsd-git-${testsid}" "/tmp/gsd-wt-${testsid}" \
       "/tmp/gsd-pkgver-${testsid}" "/tmp/${testsid}-input.json"
 [ "$smoke_ok" = "1" ] || rm -rf "/tmp/ship-gate-perf-$$-fixture"
+rm -rf "$perf_fleet"
+unset AWAKE_NO_FLEET AWAKE_FLEET_DIR
 
 printf 'v1.2 SHIP GATE: PASS\n'
 exit 0

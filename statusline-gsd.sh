@@ -367,6 +367,104 @@ read_worktree_state() {
 
 read_worktree_state
 
+# ---- fleet awareness (FL-01) — how many Claude sessions share this account ----
+# WHY: the 5-hour and 7-day segments report ACCOUNT-WIDE rate-limit consumption,
+# but the bar renders them as if this session were the only thing spending it.
+# Run an orchestrator (Orca gives every agent its own worktree AND its own `claude`
+# process) and the 5h window climbs for reasons that are invisible here — you read
+# "47% used" with no way to tell whether that is you or five siblings. The number is
+# correct; the context is missing.
+#
+# MECHANISM: every render drops a heartbeat at $FLEET_DIR/<session_id>. Any bar can
+# then count the fresh ones. No IPC, no daemon, no orchestrator coupling — this works
+# identically for Orca worktrees, hand-rolled `git worktree` setups, or plain extra
+# terminal tabs. Verified empirically that a Claude Code session refreshes its
+# statusline at ~1Hz even while unfocused and idle, so a live session always carries
+# a fresh heartbeat.
+#
+# BUSY vs LIVE: an idle tab heartbeats exactly like a working one, so a raw count
+# would over-attribute quota burn. The discriminator is the TRANSCRIPT's mtime —
+# Claude Code appends to <session_id>.jsonl continuously through a turn and falls
+# silent between turns. Measured on a live 4-session fleet: the two working sessions
+# were at 2s and 3s, the two idle ones at 218s and >30min. Clean split, no extra
+# hooks, no settings.json change.
+#
+# /tmp is world-shared, so the directory is namespaced by uid ($UID is a bash
+# builtin — no fork). Every step below degrades to "no fleet segment" on failure.
+# AWAKE_FLEET_DIR relocates the heartbeat directory. Two real uses: pointing it at
+# a non-/tmp path, and giving the test suite an isolated directory so a developer's
+# own live sessions can't leak into an assertion about fleet size.
+FLEET_DIR="${AWAKE_FLEET_DIR:-/tmp/awake-agents-${UID:-0}}"
+FLEET_TTL=15          # heartbeat age (s) that still counts as a live session
+FLEET_BUSY_TTL=15     # transcript idle gap (s) after which a session reads as idle
+FLEET_PRUNE_MIN=5     # heartbeats older than this many minutes are swept
+fleet_n=0; fleet_busy=0
+
+# Resolve this session's transcript and decide whether the session is mid-turn.
+# Prefers the payload's transcript_path (authoritative — the same field
+# ~/.claude/hooks/gsd-statusline.js consumes); falls back to a glob on the session
+# id, since Claude Code names every transcript <session_id>.jsonl. The glob is pure
+# bash (no fork) and survives the project-directory encoding changing.
+_session_is_busy() {
+  local tx txm
+  tx="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
+  if [ -z "$tx" ] || [ ! -f "$tx" ]; then
+    for tx in "$HOME"/.claude/projects/*/"${session_id}".jsonl; do
+      [ -f "$tx" ] && break
+    done
+  fi
+  [ -f "$tx" ] || return 1
+  txm="$(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx" 2>/dev/null)"
+  [ -n "$txm" ] || return 1
+  [ "$(( now_epoch - txm ))" -le "$FLEET_BUSY_TTL" ]
+}
+
+# Heartbeat line: "<epoch> <project> <busy>". The project field is recorded for
+# future aggregation (e.g. "N projects") and is stripped of spaces so the awk reader
+# can stay on default field splitting.
+_write_heartbeat() {
+  [ -n "$session_id" ] || return 0
+  [ -d "$FLEET_DIR" ] || mkdir -p "$FLEET_DIR" 2>/dev/null || return 0
+  local proj busy=0
+  if [ "$wt_is" = "1" ]; then proj="$wt_project"; else proj="$(basename "$cwd")"; fi
+  proj="${proj// /_}"; [ -z "$proj" ] && proj="-"
+  _session_is_busy && busy=1
+  printf '%s %s %s\n' "$now_epoch" "$proj" "$busy" > "${FLEET_DIR}/${session_id}" 2>/dev/null || true
+}
+
+# Count live + busy sessions in ONE awk pass (measured ~9ms over a dozen files).
+# A per-file `stat` loop would cost one fork each; reading the epoch out of the file
+# CONTENT keeps it to a single process regardless of fleet size.
+_read_fleet() {
+  local out
+  out="$(awk -v now="$now_epoch" -v ttl="$FLEET_TTL" '
+    FNR == 1 {
+      age = now - $1
+      if (age >= 0 && age <= ttl) { n++; if ($3 == "1") b++ }
+    }
+    END { printf "%d %d", n + 0, b + 0 }' "${FLEET_DIR}"/* 2>/dev/null)"
+  case "$out" in
+    [0-9]*' '[0-9]*) fleet_n="${out%% *}"; fleet_busy="${out##* }" ;;
+    *)               fleet_n=0; fleet_busy=0 ;;
+  esac
+}
+
+# Sweep abandoned heartbeats. Gated on the clock so it costs one `find` roughly
+# twice a minute per session instead of once per render — a dead session's file is
+# already excluded by the TTL, so pruning is disk hygiene, never correctness.
+_prune_fleet() {
+  [ "$(( now_epoch % 30 ))" -eq 0 ] || return 0
+  find "$FLEET_DIR" -type f -mmin "+${FLEET_PRUNE_MIN}" -delete 2>/dev/null || true
+}
+
+# AWAKE_NO_FLEET=1 disables the mechanism entirely (no heartbeat written, no segment
+# rendered) for anyone who would rather not have a file per session under /tmp.
+if [ "${AWAKE_NO_FLEET:-0}" != "1" ]; then
+  _write_heartbeat
+  _read_fleet
+  _prune_fleet
+fi
+
 # ---- 20-char truncation helper (LAYOUT-02) ----
 # Bash 3.2-safe substring truncation with U+2026 ellipsis (3-byte UTF-8).
 # Returns the input unchanged when ≤20 chars; otherwise first 19 chars + …
@@ -961,6 +1059,36 @@ numcol="$(zone_color "$ctxpct")"
 ctxseg_full="${DG}·${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
 ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
 
+# ---- fleet segment (FL-02) — rendered on the 5h row, next to the shared quota ----
+# Placement is the point: the fleet count is the missing denominator for the number
+# immediately to its left. "47% used ↻ 4d 3h" answers *how much*; "5 sessions"
+# answers *by whom*. Splitting them onto separate rows would break that reading.
+#
+# ADAPTIVE: absent entirely at fleet_n ≤ 1, which is the normal single-session case
+# — the bar gains a segment only when there is genuinely something to disambiguate.
+# The `N active` half is likewise dropped at zero, so a fleet of idle tabs reads
+# "5 sessions" rather than the noisier "5 sessions · 0 active". That also makes the
+# degradation graceful when the transcript can't be resolved: no false "0 active",
+# just the honest count.
+#
+# Wording, not glyphs: the bar's stated contract is "no decoding required", and a
+# fleet symbol would need a legend. English matches every other literal in the bar
+# ("used", "Milestone:", "Last shipped:"). No new palette entry — LG text with the
+# same DG `·` separators the rest of the row already uses.
+fleetseg=""
+fleetseg_lead=""
+if [ "${fleet_n:-0}" -ge 2 ] 2>/dev/null; then
+  _fl="${LG}${fleet_n} sessions${R}"
+  if [ "${fleet_busy:-0}" -ge 1 ] 2>/dev/null; then
+    _fl="${_fl} ${DG}·${R} ${LG}${fleet_busy} active${R}"
+  fi
+  # Two forms, mirroring ctxseg: `_full` trails an existing segment (leading `·`),
+  # `_lead` opens the row when the block segment is absent (trailing `·`).
+  fleetseg=" ${DG}·${R} ${_fl}"
+  fleetseg_lead="${_fl} ${DG}·${R} "
+  unset _fl
+fi
+
 # ---- Context Management 4-line reflow emitter (v1.2) ----
 # Emits: title + 3 (or 4) indented content rows. Each row is prefixed with a reset
 # SGR + 3 literal spaces (Claude Code trims leading literal whitespace, but a space
@@ -995,10 +1123,13 @@ emit_context_block() {
   line_a="$(printf '%s' "$line1" | sed -nE "1{ $strip; p; }")"
   _row "$model_clean"
   _row "$line_a"
+  # Row 3 = [block%] [fleet] [memory gauge]. Both leading segments are optional, so
+  # the fleet token carries the separator appropriate to whichever slot it lands in
+  # (see FL-02): trailing an existing block segment, or opening the row without one.
   if [ -n "$blockseg" ]; then
-    _row "$blockseg $ctxseg_full"
+    _row "${blockseg}${fleetseg} $ctxseg_full"
   else
-    _row "$ctxseg_standalone"
+    _row "${fleetseg_lead}$ctxseg_standalone"
   fi
   [ -n "$weeklyseg" ] && _row "$weeklyseg"
 }

@@ -49,6 +49,25 @@ Long branch names truncate from the *front*, keeping the part that identifies th
 
 In a normal checkout none of this fires — the row renders exactly as it always has.
 
+### Fleet awareness
+
+The 5-hour and 7-day numbers are account-wide, but the bar used to present them as if this session were the only thing spending them. Run several agents and the window climbs for reasons you can't see. Awake counts the live sessions and puts the count next to the quota it explains:
+
+```
+│  25% used ↻ 3h · 5 sessions · 2 active · ▓▓░░░░░ 18%
+```
+
+`5 sessions` is how many Claude Code sessions are alive on this machine. `2 active` is how many are actually mid-turn — the rest are tabs sitting at a prompt, spending nothing. Idle tabs heartbeat exactly like working ones, so counting sessions alone would blame the wrong thing; the split comes from each session's transcript mtime, which goes quiet between turns.
+
+Alone, the segment doesn't render at all. All idle, you get `5 sessions` with no `active` half.
+
+It works for any multi-session setup — an orchestrator, `git worktree` by hand, or just extra tabs. There's no daemon and no IPC: each render drops a heartbeat file, each bar counts the fresh ones. Two knobs:
+
+- `AWAKE_NO_FLEET=1` turns it off completely — nothing rendered, nothing written to disk.
+- `AWAKE_FLEET_DIR=/some/path` moves the heartbeat directory off `/tmp/awake-agents-<uid>`.
+
+Sessions on other machines don't appear. `/tmp` is local, and this is deliberately not networked.
+
 **GSD Status** — your workflow position when you use the [GSD framework (gsd-pi)](https://github.com/open-gsd/gsd-pi). Awake's GSD block is purpose-built for the GSD project structure (milestones, phases, stages, plans, side-channels):
 - Current milestone name
 - Current phase + position (`Phase 3/7`)
