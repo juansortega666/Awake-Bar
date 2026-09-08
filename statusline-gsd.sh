@@ -64,7 +64,24 @@ SP=$'\xe2\x80\x8b'
 
 # ---- session id + clock (computed once; reused by the powerline cache, the live-
 # signal freshness checks, the spinner glyph, and the colour pulse) ----
-session_id="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
+#
+# `// "default"` was NOT enough: jq's alternative operator only fires on null and
+# false, so a payload carrying `"session_id": ""` passed the empty string straight
+# through. Every cache path then collapsed to `/tmp/gsd-git-`, `/tmp/gsd-powerline-`,
+# … — a SHARED filename. Two such sessions would read each other's git state and
+# each other's cached render. Observed in the wild as stray suffix-less files in /tmp.
+# `// empty` normalizes null/missing to the empty string, and the explicit test below
+# catches all three cases at once.
+#
+# The sanitize is the second half of the same fix: the id is interpolated straight
+# into filesystem paths, so anything outside [A-Za-z0-9_-] (a `/` above all) has to
+# go before it can steer a write out of /tmp. Real ids are UUIDs and pass untouched.
+# ALL FIVE readers of session_id (this file, subagent-statusline.sh, and the three
+# hooks) apply this identical normalization — they address the same files by name,
+# so a divergence would silently unpair writer from reader.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+session_id="${session_id//[^A-Za-z0-9_-]/}"
+[ -z "$session_id" ] && session_id="default"
 now_epoch="$(date +%s)"
 
 # ---- cwd resolution (shared by version walk below + GSD project walk later) ----
@@ -452,9 +469,40 @@ _read_fleet() {
 # Sweep abandoned heartbeats. Gated on the clock so it costs one `find` roughly
 # twice a minute per session instead of once per render — a dead session's file is
 # already excluded by the TTL, so pruning is disk hygiene, never correctness.
+# AWAKE_FORCE_PRUNE=1 bypasses the clock gate on both sweeps. It exists so the ship
+# gate can exercise the REAL sweep instead of asserting against a copy of the command
+# — a duplicated `find` in the test would drift from the one that actually runs.
+_prune_gate() { [ "${AWAKE_FORCE_PRUNE:-0}" = "1" ] || [ "$(( now_epoch % 30 ))" -eq 0 ]; }
+
 _prune_fleet() {
-  [ "$(( now_epoch % 30 ))" -eq 0 ] || return 0
+  _prune_gate || return 0
   find "$FLEET_DIR" -type f -mmin "+${FLEET_PRUNE_MIN}" -delete 2>/dev/null || true
+}
+
+# ---- /tmp cache sweep (FL-03) ----
+# Every session leaves a set of `/tmp/gsd-<kind>-<session_id>` caches behind when its
+# terminal closes, and nothing ever removed them — they accumulated one set per
+# session for the life of the machine. Harmless in size, but it is litter in a shared
+# directory and it grows without bound on a box that opens agents all day.
+#
+# Safe because a LIVE session rewrites its caches at least every 4s (that is the hot
+# TTL), so a full day of staleness is unambiguous proof the owner is gone. Runs on the
+# same 30s clock gate as the fleet sweep: roughly twice a minute per session, not once
+# per render. Restricted to the exact prefixes this bar owns — it never touches
+# anything else in /tmp — and every failure mode is silent.
+#
+# The TRAILING SLASH on `/tmp/` is load-bearing on macOS, where /tmp is a symlink to
+# private/tmp. `find` does not follow a symlink given as the starting operand, so
+# `find /tmp -maxdepth 1` examines the symlink itself and never descends — the sweep
+# silently matched nothing. A path operand ending in `/` resolves to the directory.
+# (`find -H /tmp` is the equivalent spelling.) Caught by TMP-A.
+_prune_tmp_caches() {
+  _prune_gate || return 0
+  find /tmp/ -maxdepth 1 -type f -mtime +1 \
+    \( -name 'gsd-git-*'   -o -name 'gsd-powerline-*' -o -name 'gsd-pkgver-*' \
+    -o -name 'gsd-wt-*'    -o -name 'gsd-live-*'      -o -name 'gsd-cmd-*'    \
+    -o -name 'gsd-wave-*'  -o -name 'gsd-alerts-*' \) \
+    -delete 2>/dev/null || true
 }
 
 # AWAKE_NO_FLEET=1 disables the mechanism entirely (no heartbeat written, no segment
@@ -464,6 +512,9 @@ if [ "${AWAKE_NO_FLEET:-0}" != "1" ]; then
   _read_fleet
   _prune_fleet
 fi
+# Runs regardless of the fleet opt-out: the gsd-* caches predate fleet awareness and
+# are written whether or not it is enabled, so their sweep must not hang off its flag.
+_prune_tmp_caches
 
 # ---- 20-char truncation helper (LAYOUT-02) ----
 # Bash 3.2-safe substring truncation with U+2026 ellipsis (3-byte UTF-8).

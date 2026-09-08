@@ -68,6 +68,8 @@ It works for any multi-session setup — an orchestrator, `git worktree` by hand
 
 Sessions on other machines don't appear. `/tmp` is local, and this is deliberately not networked.
 
+Awake also sweeps its own `/tmp/gsd-*` caches once they're more than a day stale. A live session rewrites them every few seconds, so anything that old belongs to a terminal that closed. The sweep is restricted to Awake's own filename prefixes and to the top level of `/tmp`.
+
 **GSD Status** — your workflow position when you use the [GSD framework (gsd-pi)](https://github.com/open-gsd/gsd-pi). Awake's GSD block is purpose-built for the GSD project structure (milestones, phases, stages, plans, side-channels):
 - Current milestone name
 - Current phase + position (`Phase 3/7`)

@@ -35,10 +35,17 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATUS="${REPO}/statusline-gsd.sh"
 
-# Real-world GSD consumer used for smoke tests (D-07 + D-19 + V1.A regressions).
-# Override with `AWAKE_FIXTURE_PROJECT=/path/to/some-gsd-project bash tests/v1-ship-gate.sh`
-# to run against your own GSD project, or set to "" to skip the consumer-smoke tests.
-AWAKE_FIXTURE_PROJECT="${AWAKE_FIXTURE_PROJECT:-${HOME}/Documents/TreSure-Hope-Lite}"
+# Real-world GSD consumer used for the smoke tests (D-07 + D-19 + V1 + L4).
+# Opt-in only:
+#   AWAKE_FIXTURE_PROJECT=/path/to/some-gsd-project bash tests/v1-ship-gate.sh
+# Unset (the default) skips just those tests; the synthetic suite always runs.
+#
+# There used to be a default of `${HOME}/Documents/TreSure-Hope-Lite`. Two things
+# wrong with it: a public repo must not hardcode one maintainer's home directory,
+# and the path was misspelled anyway (`TreSure` for `TreSur`), so it never resolved
+# on the very machine it was written for. The typo stayed invisible because the old
+# gate bailed out early instead of running — see the GATE-SCOPE note below.
+AWAKE_FIXTURE_PROJECT="${AWAKE_FIXTURE_PROJECT:-}"
 TRESUR_STATE="${AWAKE_FIXTURE_PROJECT}/.planning/STATE.md"
 
 # Fleet awareness is OFF for the suite by default (FL tests re-enable it per-render).
@@ -1639,6 +1646,112 @@ echo "$fl_row" | grep -qE '25% used ↻ 3h · 3 sessions · 1 active · .*▓' |
 echo "$out" | strip_ansi | sed -n '5p' | grep -qE 'sessions' && \
   fail "FL-G: fleet token leaked onto the 7-day row: $(echo "$out" | strip_ansi | sed -n '5p')"
 rm -rf "$fdir"; p5_cleanup "$sid"
+
+# ============================================================================
+# SID: session-id normalization (v1.3)
+# ============================================================================
+# jq's `//` fires on null and false but NOT on an empty string, so a payload with
+# `"session_id": ""` used to pass straight through and every cache path collapsed to
+# a shared, suffix-less filename (/tmp/gsd-git-, /tmp/gsd-powerline-, …). Two such
+# sessions would have read each other's git state and each other's cached render.
+
+# ---- SID-A: empty / null / missing session_id all collapse to `default` ----
+for _sidcase in '""' 'null' '__ABSENT__'; do
+  s="ship-gate-sid-$$"
+  rm -f /tmp/gsd-git- /tmp/gsd-powerline- /tmp/gsd-pkgver- /tmp/gsd-wt-
+  fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+  if [ "$_sidcase" = "__ABSENT__" ]; then
+    printf '{"workspace":{"current_dir":"%s"}}' "$fixd" > "/tmp/${s}-input.json"
+  else
+    printf '{"session_id":%s,"workspace":{"current_dir":"%s"}}' "$_sidcase" "$fixd" > "/tmp/${s}-input.json"
+  fi
+  bash "$STATUS" < "/tmp/${s}-input.json" >/dev/null 2>&1
+  # The bug's signature is a cache file whose name ends at the trailing dash.
+  for _stray in /tmp/gsd-git- /tmp/gsd-powerline- /tmp/gsd-pkgver- /tmp/gsd-wt-; do
+    [ -f "$_stray" ] && fail "SID-A(${_sidcase}): wrote suffix-less shared cache ${_stray}"
+  done
+  rm -rf "$fixd" "/tmp/${s}-input.json"
+done
+p5_cleanup "default"
+
+# ---- SID-B: a hostile session_id cannot steer a write outside its directory ----
+# The id is interpolated raw into paths. The `gsd-<kind>-<sid>` caches happen to be
+# hard to escape (there is no separator before the id, so `../x` would need a literal
+# `gsd-git-..` directory to exist) — but the FLEET heartbeat path is `$FLEET_DIR/$sid`,
+# WITH a separator, and `../evil` there resolves cleanly one level up. That is the
+# vector this asserts; an earlier version of this test aimed at the cache prefix and
+# passed vacuously because the escape was impossible there to begin with.
+s="ship-gate-sid-b-$$"
+fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+sidb_root="/tmp/${s}-root"; rm -rf "$sidb_root"; mkdir -p "${sidb_root}/fleet"
+printf '{"session_id":"../pwned","workspace":{"current_dir":"%s"}}' "$fixd" > "/tmp/${s}-input.json"
+AWAKE_NO_FLEET=0 AWAKE_FLEET_DIR="${sidb_root}/fleet" bash "$STATUS" < "/tmp/${s}-input.json" >/dev/null 2>&1
+[ -f "${sidb_root}/pwned" ] && \
+  fail "SID-B: '../pwned' as a session id escaped the fleet directory and wrote ${sidb_root}/pwned"
+# Positive half: the traversal attempt must still yield a USABLE, sanitized id rather
+# than silently writing nothing — `../pwned` sanitizes to `pwned`.
+[ -f "${sidb_root}/fleet/pwned" ] || \
+  fail "SID-B: sanitized id did not land inside the fleet directory (expected ${sidb_root}/fleet/pwned)"
+rm -rf "$fixd" "$sidb_root" "/tmp/${s}-input.json"
+p5_cleanup "pwned"
+
+# ---- SID-C: all five scripts normalize identically ----
+# The statusline READS files the hooks WRITE, addressed purely by name. If the two
+# sides ever disagreed about what an empty id maps to, the pairing breaks silently.
+for _f in "${REPO}/statusline-gsd.sh" "${REPO}/subagent-statusline.sh" \
+          "${REPO}/hooks/track-gsd.sh" "${REPO}/hooks/track-stop.sh" \
+          "${REPO}/hooks/prewarm-powerline.sh"; do
+  grep -q 'session_id // empty' "$_f" || \
+    fail "SID-C: $(basename "$_f") still uses the '// \"default\"' form that lets an empty id through"
+  grep -q 'A-Za-z0-9_-' "$_f" || \
+    fail "SID-C: $(basename "$_f") does not sanitize the session id before using it as a path"
+done
+
+# ---- SID-D: the fixture-project default is not one maintainer's home directory ----
+grep -qE 'AWAKE_FIXTURE_PROJECT="\$\{AWAKE_FIXTURE_PROJECT:-\}"' "${BASH_SOURCE[0]}" || \
+  fail "SID-D: AWAKE_FIXTURE_PROJECT reintroduced a hardcoded default path"
+
+# ============================================================================
+# TMP: /tmp cache sweep (v1.3)
+# ============================================================================
+
+# ---- TMP-A: the sweep, exercised through a real render ----
+# Every session used to leave its `/tmp/gsd-<kind>-<sid>` caches behind forever.
+# The sweep is clock-gated (now % 30) so the render below sets AWAKE_FORCE_PRUNE=1 to
+# run it deterministically. Driving the REAL code path matters here: the first version
+# of this test asserted against a COPY of the find command, and the copy carried the
+# same bug as the original — on macOS /tmp is a symlink, and `find` does not follow a
+# symlink given as its starting operand, so the sweep matched nothing at all.
+s="ship-gate-tmpa-$$"
+fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+tmpa_old="/tmp/gsd-git-ship-gate-tmpa-old-$$"      # owned prefix, ancient  → must go
+tmpa_new="/tmp/gsd-git-ship-gate-tmpa-new-$$"      # owned prefix, fresh    → must stay
+tmpa_other="/tmp/not-ours-ship-gate-tmpa-$$"       # foreign name, ancient  → must stay
+: > "$tmpa_old"; : > "$tmpa_new"; : > "$tmpa_other"
+tmpa_stamp="$(date -v-2d +%Y%m%d%H%M.%S 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M.%S)"
+touch -t "$tmpa_stamp" "$tmpa_old"   2>/dev/null
+touch -t "$tmpa_stamp" "$tmpa_other" 2>/dev/null
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$s" "$fixd" > "/tmp/${s}-input.json"
+AWAKE_FORCE_PRUNE=1 bash "$STATUS" < "/tmp/${s}-input.json" >/dev/null 2>&1
+[ -f "$tmpa_old" ]   && fail "TMP-A: a 2-day-old gsd-git-* cache survived the sweep"
+[ -f "$tmpa_new" ]   || fail "TMP-A: the sweep deleted a FRESH cache — live sessions would lose their state"
+[ -f "$tmpa_other" ] || fail "TMP-A: the sweep deleted a file outside the gsd-* prefixes it owns"
+rm -f "$tmpa_new" "$tmpa_other" "/tmp/${s}-input.json"; rm -rf "$fixd"
+p5_cleanup "$s"
+
+# ---- TMP-B: the sweep stays inside /tmp's top level ----
+# -maxdepth 1 keeps it from descending into subdirectories it does not own — including
+# the fleet heartbeat directory, which has its own far shorter TTL.
+s="ship-gate-tmpb-$$"
+fixd="/tmp/${s}-fixture"; rm -rf "$fixd"; mkdir -p "${fixd}/.git"
+deep="/tmp/${s}-deep"; rm -rf "$deep"; mkdir -p "$deep"
+deepfile="${deep}/gsd-git-decoy"; : > "$deepfile"
+touch -t "$tmpa_stamp" "$deepfile" 2>/dev/null
+printf '{"session_id":"%s","workspace":{"current_dir":"%s"}}' "$s" "$fixd" > "/tmp/${s}-input.json"
+AWAKE_FORCE_PRUNE=1 bash "$STATUS" < "/tmp/${s}-input.json" >/dev/null 2>&1
+[ -f "$deepfile" ] || fail "TMP-B: the sweep descended into a /tmp subdirectory it does not own"
+rm -rf "$deep" "$fixd" "/tmp/${s}-input.json"
+p5_cleanup "$s"
 
 # ---- D-08: PERF lock — per-render time budget ----
 # SELF-CONTAINED FIXTURE (v1.3): this section used to reuse `$testsid` and its

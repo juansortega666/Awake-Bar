@@ -8,7 +8,13 @@
 set -uo pipefail
 
 input="$(cat)"
-sid="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
+# Normalized identically in statusline-gsd.sh (see the long note there): jq's `//`
+# does not fire on an EMPTY string, which collapsed every cache path to a shared
+# suffix-less filename. The sanitize keeps the id from steering a write out of /tmp.
+# Writer and reader address the same files by name, so this must not diverge.
+sid="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+sid="${sid//[^A-Za-z0-9_-]/}"
+[ -z "$sid" ] && sid="default"
 cmd="$(printf '%s' "$input" | jq -r '.command_name // ""' 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 
 stage=""
