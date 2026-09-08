@@ -53,7 +53,13 @@ printf '%s' "$input" | jq -c --arg E "$(printf '\033')" --argjson now "$now_s" '
 # timestamp. Empty stage = no GSD agent running. The main statusline reads this and
 # overrides the stale STATE.md stage when the record is fresh. The record also carries
 # the sub-step counts ("<epoch> <stage> <cur> <tot>") for the live "(cur/tot)" counter.
-session_id="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
+# Normalized identically in statusline-gsd.sh (see the long note there): jq's `//`
+# does not fire on an EMPTY string, which collapsed every cache path to a shared
+# suffix-less filename. The sanitize keeps the id from steering a write out of /tmp.
+# Writer and reader address the same files by name, so this must not diverge.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+session_id="${session_id//[^A-Za-z0-9_-]/}"
+[ -z "$session_id" ] && session_id="default"
 running="$(printf '%s' "$input" | jq -r '[.tasks[]? | select(.status=="running") | (.label // .description // .type // "")] | join(" ") | ascii_downcase' 2>/dev/null)"
 
 # Sub-step progress (Option A, dynamic): count the spawned subagents in the panel.

@@ -64,7 +64,24 @@ SP=$'\xe2\x80\x8b'
 
 # ---- session id + clock (computed once; reused by the powerline cache, the live-
 # signal freshness checks, the spinner glyph, and the colour pulse) ----
-session_id="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
+#
+# `// "default"` was NOT enough: jq's alternative operator only fires on null and
+# false, so a payload carrying `"session_id": ""` passed the empty string straight
+# through. Every cache path then collapsed to `/tmp/gsd-git-`, `/tmp/gsd-powerline-`,
+# … — a SHARED filename. Two such sessions would read each other's git state and
+# each other's cached render. Observed in the wild as stray suffix-less files in /tmp.
+# `// empty` normalizes null/missing to the empty string, and the explicit test below
+# catches all three cases at once.
+#
+# The sanitize is the second half of the same fix: the id is interpolated straight
+# into filesystem paths, so anything outside [A-Za-z0-9_-] (a `/` above all) has to
+# go before it can steer a write out of /tmp. Real ids are UUIDs and pass untouched.
+# ALL FIVE readers of session_id (this file, subagent-statusline.sh, and the three
+# hooks) apply this identical normalization — they address the same files by name,
+# so a divergence would silently unpair writer from reader.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+session_id="${session_id//[^A-Za-z0-9_-]/}"
+[ -z "$session_id" ] && session_id="default"
 now_epoch="$(date +%s)"
 
 # ---- cwd resolution (shared by version walk below + GSD project walk later) ----
@@ -276,6 +293,229 @@ read_git_state() {
 # Call once on every render
 read_git_state
 
+# ---- worktree identity (WT-01) — project + worktree, 4s hot / 60s stale cache ----
+# WHY: under a multi-worktree orchestrator (Orca creates one git worktree per agent
+# at ~/orca/workspaces/<Project>/<slug> and runs a separate Claude process in each),
+# powerline's `directory` segment renders `basename(cwd)` — i.e. the WORKTREE SLUG.
+# The project identity is lost: six terminals across three projects all show only
+# their slug (`barreleye`, `optimizacion-de-flujos`), and the branch column shows
+# the orchestrator-prefixed branch (`juansortega666/<slug>`), which is redundant
+# with the slug AND truncates to a useless `juansortega666/opti…`. The bar answers
+# "where am I?" with half the answer.
+#
+# DETECTION: `git rev-parse --git-common-dir --show-toplevel` — ONE call, two lines.
+#   main checkout  → common-dir is RELATIVE (".git"), resolves to <top>/.git
+#   linked worktree→ common-dir is the ABSOLUTE path of the MAIN repo's .git
+# So: linked worktree ⟺ resolved common-dir != <top>/.git.
+#   project  = basename(dirname(common-dir))   e.g. /Users/.../Awake-Bar/.git → Awake-Bar
+#   worktree = basename(top)                    e.g. .../barreleye            → barreleye
+#
+# The `*/.git` guard excludes SUBMODULES, whose common-dir is
+# `<super>/.git/modules/<name>` — dirname would yield the meaningless "modules".
+# A submodule is not a worktree and must fall through to the unchanged rendering.
+#
+# Populates 3 globals consumed by the identity splice (WT-02) and the branch
+# collapse (WT-03) further down. wt_is=0 → every downstream block is a no-op and
+# the main-checkout render is byte-identical to pre-WT behavior.
+wt_is=0; wt_project=""; wt_name=""
+
+# Parse a cache line "is|project|name" into the 3 wt_* globals. `|` (not space)
+# because directory names legitimately contain spaces — the space-delimited
+# key:value schema of /tmp/gsd-git-<sid> could not carry them, which is why this
+# lives in its own cache file rather than extending that one.
+_load_wt_cache() {
+  local line="$1"
+  wt_is="${line%%|*}"; line="${line#*|}"
+  wt_project="${line%%|*}"
+  wt_name="${line#*|}"
+  wt_is="${wt_is//[^01]/}"; [ -z "$wt_is" ] && wt_is=0
+  # A truthy flag with an empty half is incoherent — fail closed to main-checkout.
+  { [ "$wt_is" = "1" ] && { [ -z "$wt_project" ] || [ -z "$wt_name" ]; }; } && \
+    { wt_is=0; wt_project=""; wt_name=""; }
+}
+
+# Fresh query. Returns 0 on success (wt_* populated), non-zero on failure so the
+# caller can fall back to a stale cache instead of clobbering good values.
+_query_worktree() {
+  local out common top mainroot
+  out="$(git_with_timeout git -C "$cwd" rev-parse --git-common-dir --show-toplevel 2>/dev/null)"
+  [ -z "$out" ] && return 1
+  common="$(printf '%s\n' "$out" | sed -n '1p')"
+  top="$(printf '%s\n' "$out" | sed -n '2p')"
+  [ -z "$common" ] || [ -z "$top" ] && return 1
+  # Relative common-dir (main checkout) → absolutize against the worktree top.
+  case "$common" in /*) ;; *) common="${top}/${common}" ;; esac
+  common="${common%/.}"     # some git versions emit a trailing "/."
+  common="${common%/}"
+  wt_is=0; wt_project=""; wt_name=""
+  # Main checkout: common-dir IS this tree's .git → nothing to disambiguate.
+  [ "$common" = "${top}/.git" ] && return 0
+  # Submodule/bare/exotic layouts: only a real linked worktree points at a `.git` dir.
+  case "$common" in */.git) ;; *) return 0 ;; esac
+  mainroot="$(dirname "$common")"
+  wt_project="$(basename "$mainroot")"
+  wt_name="$(basename "$top")"
+  if [ -n "$wt_project" ] && [ -n "$wt_name" ]; then wt_is=1; else wt_project=""; wt_name=""; fi
+  return 0
+}
+
+# Same 4s-hot / 60s-stale ladder as read_git_state (CONTEXT.md items 4-5).
+read_worktree_state() {
+  local cache="/tmp/gsd-wt-${session_id}" age=999999 cmtime line
+  if [ -f "$cache" ]; then
+    cmtime="$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null)"
+    [ -n "$cmtime" ] && age=$(( now_epoch - cmtime ))
+  fi
+  if [ "$age" -le 4 ]; then
+    line="$(cat "$cache" 2>/dev/null)" && _load_wt_cache "$line"
+    return 0
+  fi
+  if _query_worktree; then
+    printf '%s|%s|%s' "$wt_is" "$wt_project" "$wt_name" > "$cache" 2>/dev/null || true
+    return 0
+  fi
+  if [ -f "$cache" ] && [ "$age" -le 60 ]; then
+    line="$(cat "$cache" 2>/dev/null)" && _load_wt_cache "$line"
+    return 0
+  fi
+  # No usable cache + query failed → main-checkout defaults already set. Never crash.
+  return 0
+}
+
+read_worktree_state
+
+# ---- fleet awareness (FL-01) — how many Claude sessions share this account ----
+# WHY: the 5-hour and 7-day segments report ACCOUNT-WIDE rate-limit consumption,
+# but the bar renders them as if this session were the only thing spending it.
+# Run an orchestrator (Orca gives every agent its own worktree AND its own `claude`
+# process) and the 5h window climbs for reasons that are invisible here — you read
+# "47% used" with no way to tell whether that is you or five siblings. The number is
+# correct; the context is missing.
+#
+# MECHANISM: every render drops a heartbeat at $FLEET_DIR/<session_id>. Any bar can
+# then count the fresh ones. No IPC, no daemon, no orchestrator coupling — this works
+# identically for Orca worktrees, hand-rolled `git worktree` setups, or plain extra
+# terminal tabs. Verified empirically that a Claude Code session refreshes its
+# statusline at ~1Hz even while unfocused and idle, so a live session always carries
+# a fresh heartbeat.
+#
+# BUSY vs LIVE: an idle tab heartbeats exactly like a working one, so a raw count
+# would over-attribute quota burn. The discriminator is the TRANSCRIPT's mtime —
+# Claude Code appends to <session_id>.jsonl continuously through a turn and falls
+# silent between turns. Measured on a live 4-session fleet: the two working sessions
+# were at 2s and 3s, the two idle ones at 218s and >30min. Clean split, no extra
+# hooks, no settings.json change.
+#
+# /tmp is world-shared, so the directory is namespaced by uid ($UID is a bash
+# builtin — no fork). Every step below degrades to "no fleet segment" on failure.
+# AWAKE_FLEET_DIR relocates the heartbeat directory. Two real uses: pointing it at
+# a non-/tmp path, and giving the test suite an isolated directory so a developer's
+# own live sessions can't leak into an assertion about fleet size.
+FLEET_DIR="${AWAKE_FLEET_DIR:-/tmp/awake-agents-${UID:-0}}"
+FLEET_TTL=15          # heartbeat age (s) that still counts as a live session
+FLEET_BUSY_TTL=15     # transcript idle gap (s) after which a session reads as idle
+FLEET_PRUNE_MIN=5     # heartbeats older than this many minutes are swept
+fleet_n=0; fleet_busy=0
+
+# Resolve this session's transcript and decide whether the session is mid-turn.
+# Prefers the payload's transcript_path (authoritative — the same field
+# ~/.claude/hooks/gsd-statusline.js consumes); falls back to a glob on the session
+# id, since Claude Code names every transcript <session_id>.jsonl. The glob is pure
+# bash (no fork) and survives the project-directory encoding changing.
+_session_is_busy() {
+  local tx txm
+  tx="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
+  if [ -z "$tx" ] || [ ! -f "$tx" ]; then
+    for tx in "$HOME"/.claude/projects/*/"${session_id}".jsonl; do
+      [ -f "$tx" ] && break
+    done
+  fi
+  [ -f "$tx" ] || return 1
+  txm="$(stat -f %m "$tx" 2>/dev/null || stat -c %Y "$tx" 2>/dev/null)"
+  [ -n "$txm" ] || return 1
+  [ "$(( now_epoch - txm ))" -le "$FLEET_BUSY_TTL" ]
+}
+
+# Heartbeat line: "<epoch> <project> <busy>". The project field is recorded for
+# future aggregation (e.g. "N projects") and is stripped of spaces so the awk reader
+# can stay on default field splitting.
+_write_heartbeat() {
+  [ -n "$session_id" ] || return 0
+  [ -d "$FLEET_DIR" ] || mkdir -p "$FLEET_DIR" 2>/dev/null || return 0
+  local proj busy=0
+  if [ "$wt_is" = "1" ]; then proj="$wt_project"; else proj="$(basename "$cwd")"; fi
+  proj="${proj// /_}"; [ -z "$proj" ] && proj="-"
+  _session_is_busy && busy=1
+  printf '%s %s %s\n' "$now_epoch" "$proj" "$busy" > "${FLEET_DIR}/${session_id}" 2>/dev/null || true
+}
+
+# Count live + busy sessions in ONE awk pass (measured ~9ms over a dozen files).
+# A per-file `stat` loop would cost one fork each; reading the epoch out of the file
+# CONTENT keeps it to a single process regardless of fleet size.
+_read_fleet() {
+  local out
+  out="$(awk -v now="$now_epoch" -v ttl="$FLEET_TTL" '
+    FNR == 1 {
+      age = now - $1
+      if (age >= 0 && age <= ttl) { n++; if ($3 == "1") b++ }
+    }
+    END { printf "%d %d", n + 0, b + 0 }' "${FLEET_DIR}"/* 2>/dev/null)"
+  case "$out" in
+    [0-9]*' '[0-9]*) fleet_n="${out%% *}"; fleet_busy="${out##* }" ;;
+    *)               fleet_n=0; fleet_busy=0 ;;
+  esac
+}
+
+# Sweep abandoned heartbeats. Gated on the clock so it costs one `find` roughly
+# twice a minute per session instead of once per render — a dead session's file is
+# already excluded by the TTL, so pruning is disk hygiene, never correctness.
+# AWAKE_FORCE_PRUNE=1 bypasses the clock gate on both sweeps. It exists so the ship
+# gate can exercise the REAL sweep instead of asserting against a copy of the command
+# — a duplicated `find` in the test would drift from the one that actually runs.
+_prune_gate() { [ "${AWAKE_FORCE_PRUNE:-0}" = "1" ] || [ "$(( now_epoch % 30 ))" -eq 0 ]; }
+
+_prune_fleet() {
+  _prune_gate || return 0
+  find "$FLEET_DIR" -type f -mmin "+${FLEET_PRUNE_MIN}" -delete 2>/dev/null || true
+}
+
+# ---- /tmp cache sweep (FL-03) ----
+# Every session leaves a set of `/tmp/gsd-<kind>-<session_id>` caches behind when its
+# terminal closes, and nothing ever removed them — they accumulated one set per
+# session for the life of the machine. Harmless in size, but it is litter in a shared
+# directory and it grows without bound on a box that opens agents all day.
+#
+# Safe because a LIVE session rewrites its caches at least every 4s (that is the hot
+# TTL), so a full day of staleness is unambiguous proof the owner is gone. Runs on the
+# same 30s clock gate as the fleet sweep: roughly twice a minute per session, not once
+# per render. Restricted to the exact prefixes this bar owns — it never touches
+# anything else in /tmp — and every failure mode is silent.
+#
+# The TRAILING SLASH on `/tmp/` is load-bearing on macOS, where /tmp is a symlink to
+# private/tmp. `find` does not follow a symlink given as the starting operand, so
+# `find /tmp -maxdepth 1` examines the symlink itself and never descends — the sweep
+# silently matched nothing. A path operand ending in `/` resolves to the directory.
+# (`find -H /tmp` is the equivalent spelling.) Caught by TMP-A.
+_prune_tmp_caches() {
+  _prune_gate || return 0
+  find /tmp/ -maxdepth 1 -type f -mtime +1 \
+    \( -name 'gsd-git-*'   -o -name 'gsd-powerline-*' -o -name 'gsd-pkgver-*' \
+    -o -name 'gsd-wt-*'    -o -name 'gsd-live-*'      -o -name 'gsd-cmd-*'    \
+    -o -name 'gsd-wave-*'  -o -name 'gsd-alerts-*' \) \
+    -delete 2>/dev/null || true
+}
+
+# AWAKE_NO_FLEET=1 disables the mechanism entirely (no heartbeat written, no segment
+# rendered) for anyone who would rather not have a file per session under /tmp.
+if [ "${AWAKE_NO_FLEET:-0}" != "1" ]; then
+  _write_heartbeat
+  _read_fleet
+  _prune_fleet
+fi
+# Runs regardless of the fleet opt-out: the gsd-* caches predate fleet awareness and
+# are written whether or not it is enabled, so their sweep must not hang off its flag.
+_prune_tmp_caches
+
 # ---- 20-char truncation helper (LAYOUT-02) ----
 # Bash 3.2-safe substring truncation with U+2026 ellipsis (3-byte UTF-8).
 # Returns the input unchanged when ≤20 chars; otherwise first 19 chars + …
@@ -305,6 +545,55 @@ truncate30() {
   else
     printf '%s' "$s"
   fi
+}
+
+# ---- parameterized truncation helper (WT-02) ----
+# Same contract as truncate20/truncate30 (≤N visible chars INCLUDING the ellipsis)
+# with the budget passed in. The identity token splits one row across two names
+# (project + worktree) with different budgets, so a fixed-N helper doesn't fit.
+# truncate20/truncate30 are left in place — they are referenced by locked v1.0/v1.2
+# behavior and by the ship gate; this is additive.
+truncate_n() {
+  local s="$1" n="${2:-20}"
+  if [ "${#s}" -gt "$n" ]; then
+    printf '%s…' "${s:0:$(( n - 1 ))}"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+# ---- branch truncation helper (WT-04 — supersedes truncate20 for branches) ----
+# LAYOUT-02 locked "branch truncated to 20 chars, left-anchored". That rule was
+# written before orchestrator-generated branches existed. Orca names every branch
+# `<owner>/<slug>` (e.g. `juansortega666/optimizacion-de-flujos`), so left-anchoring
+# renders `juansortega666/opti…` — the SHARED prefix survives and the DISCRIMINATING
+# tail is what gets cut. Every Orca branch then looks identical in the bar.
+#
+# New rule: budget 24 (was 20). Over budget AND contains `/` → drop the leading
+# path segments and render `…/<tail>`, truncating the tail if it still overflows.
+# Over budget with no `/` → unchanged left-anchored truncate (plain long branch
+# names have no discriminating tail to preserve).
+# Under budget → returned verbatim, so `main`, `develop`, `feat/x` are untouched.
+#
+# 24 rather than 22: it is the smallest budget that renders the realistic
+# namespaced branches whole after the prefix is dropped — `feature/disable-mint-
+# condition` becomes `…/disable-mint-condition` (24) with a SINGLE ellipsis instead
+# of the doubly-elided `…/disable-mint-condit…`. Longer tails still take a second
+# ellipsis; that is correct, the name genuinely does not fit.
+BRANCH_BUDGET=24
+truncate_branch() {
+  local s="$1" tail
+  [ "${#s}" -le "$BRANCH_BUDGET" ] && { printf '%s' "$s"; return; }
+  case "$s" in
+    */*)
+      tail="${s##*/}"
+      # `…/` costs 2 visible chars, so the tail gets BRANCH_BUDGET-2.
+      printf '…/%s' "$(truncate_n "$tail" $(( BRANCH_BUDGET - 2 )))"
+      ;;
+    *)
+      truncate_n "$s" "$BRANCH_BUDGET"
+      ;;
+  esac
 }
 
 # ---- 3-zone color helper (COLOR-02 enabler — single source of truth for thresholds) ----
@@ -340,16 +629,41 @@ zone_color() {
 # session for a few seconds: the dir·git·model·session segments change slowly, while
 # the cheap bash below (context gauge + the GSD line's spinner/pulse) still recomputes
 # every render so the animation stays smooth. TTL 4s keeps git/model reasonably fresh.
+#
+# STALE FALLBACK (WT-05): the npx call is the ONLY source for rows 1-2 (model,
+# dir, version, branch, block%, weekly%). When it returns empty — npx not on
+# PATH, offline registry check on `@latest`, node spawn contention under a
+# multi-agent orchestrator (Orca runs one Claude process per worktree, each
+# firing this statusline on its own refresh tick) — those rows previously
+# rendered as EMPTY RAILS: the whole Context Management block blanked out.
+# Fix mirrors read_git_state's Branch 3 exactly: on empty query result, reuse
+# the cached render up to 60s old rather than blanking. Silent (ROBUST-02) —
+# no staleness marker; 60s-old identity beats no identity.
+# TTL ladder:
+#   age ≤ 4s              → hot cache, skip npx entirely
+#   age > 4s, npx ok      → use fresh, refresh cache
+#   age > 4s, npx empty, age ≤ 60s → reuse stale cache (do NOT blank)
+#   age > 60s, npx empty OR no cache → empty (unchanged — nothing to fall back to)
 plcache="/tmp/gsd-powerline-${session_id}"
 line1=""
+plage=999999
 if [ -f "$plcache" ]; then
   pmtime="$(stat -f %m "$plcache" 2>/dev/null || stat -c %Y "$plcache" 2>/dev/null)"
-  [ -n "$pmtime" ] && [ "$(( now_epoch - pmtime ))" -le 4 ] && line1="$(cat "$plcache")"
+  [ -n "$pmtime" ] && plage=$(( now_epoch - pmtime ))
+  [ "$plage" -le 4 ] && line1="$(cat "$plcache")"
 fi
 if [ -z "$line1" ]; then
   line1="$(printf '%s' "$input" \
     | npx -y @owloops/claude-powerline@latest --config="$SCRIPT_DIR/claude-powerline.json" 2>/dev/null)"
-  printf '%s' "$line1" > "$plcache" 2>/dev/null || true
+  if [ -n "$line1" ]; then
+    printf '%s' "$line1" > "$plcache" 2>/dev/null || true
+  elif [ -f "$plcache" ] && [ "$plage" -le 60 ]; then
+    # npx failed/empty — reuse the stale render instead of blanking rows 1-2.
+    # Deliberately does NOT touch the cache mtime: the 60s window keeps counting
+    # from the last GOOD render, so a persistent npx failure decays to empty
+    # after a minute rather than pinning a forever-stale bar.
+    line1="$(cat "$plcache" 2>/dev/null)"
+  fi
 fi
 
 # ---- splice "V <pkgver>" between directory and git segments (SPLICE-01) ----
@@ -509,7 +823,37 @@ model_text="$(printf '%s' "$line1" | sed -nE '2{ s/[◱◑].*$//; s/✱ //; s/[[
 # inserts a `-\e[49m\e[49m\e[49m` boundary marker which would shadow our
 # extraction anchor on subsequent boundaries.
 raw_dir="$(printf '%s' "$line1" | sed -n "s|.*${esc}\[38[^m]*m \([A-Za-z0-9._/-][A-Za-z0-9._ /-]*[A-Za-z0-9._/-]\) ${esc}.*|\1|p" | head -1)"
-if [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
+
+# ---- WT-02: worktree identity splice — `<project> ⑂ <worktree>` ----
+# In a linked worktree, powerline's dir token is the worktree SLUG and the project
+# name appears nowhere on the bar. Replace the single dir token with both names,
+# joined by ⑂ (U+2442, fork). Budgets: project 18, worktree 22 — the row also
+# carries V<ver> and (when it survives WT-03) the branch, so the identity token is
+# capped at 18+3+22 = 43 visible chars.
+#
+# COLOR: the glyph takes DG (240), the same hue as the `·` segment separators the
+# transform below emits — one visual language for "this is a divider". Both names
+# stay in powerline's OWN dir SGR, recaptured here and re-emitted after the glyph
+# so project and worktree render in one identical shade (powerline uses truecolor
+# 38;2;208;208;208 for `directory`; hardcoding LG/252 instead would make the two
+# halves visibly different greys). No new palette entry is introduced.
+#
+# MUST run before the separator transform below, same as the truncation it replaces.
+if [ "$wt_is" = "1" ] && [ -n "$raw_dir" ]; then
+  # Recapture the dir segment's opening SGR so the glyph can hand the color back.
+  wt_dir_sgr="$(printf '%s' "$line1" | sed -n "s|.*\(${esc}\[38[^m]*m\) ${raw_dir} ${esc}.*|\1|p" | head -1)"
+  [ -z "$wt_dir_sgr" ] && wt_dir_sgr="$LG"
+  if [ "$wt_project" = "$wt_name" ]; then
+    # Degenerate (project and worktree share a name) — one token, no glyph.
+    wt_ident="$(truncate_n "$wt_project" 22)"
+  else
+    wt_ident="$(truncate_n "$wt_project" 18) ${DG}⑂${wt_dir_sgr} $(truncate_n "$wt_name" 22)"
+  fi
+  # First occurrence only (no /g): the dir token precedes the git segment on
+  # physical line 1, and the slug frequently recurs inside the branch name
+  # (`juansortega666/<slug>`) — a global replace would corrupt the branch token.
+  line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${wt_ident}|")"
+elif [ -n "$raw_dir" ] && [ "${#raw_dir}" -gt 20 ]; then
   trunc_dir="$(truncate20 "$raw_dir")"
   # Use | as delimiter — paths can contain slashes.
   line1="$(printf '%s' "$line1" | sed "s|${raw_dir}|${trunc_dir}|")"
@@ -588,10 +932,40 @@ fi
 if [ -z "$gs_detached" ] && [ "$gs_rebasing" != "1" ] && [ "$gs_merging" != "1" ]; then
   # Extract the branch name from $line1 (between "⎇ " and the next " " or symbol)
   raw_branch="$(printf '%s' "$line1" | sed -n 's/.*⎇ \([^ ↑↓●'"$esc"']*\).*/\1/p' | head -1)"
-  if [ -n "$raw_branch" ] && [ "${#raw_branch}" -gt 20 ]; then
-    trunc_branch="$(truncate20 "$raw_branch")"
-    # Use | as delimiter — branch names can contain slashes (feat/foo, fix/bar).
-    line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch}|⎇ ${trunc_branch}|")"
+  if [ -n "$raw_branch" ]; then
+    # ---- WT-03: collapse the branch token when it merely restates the worktree ----
+    # Orca derives the branch from the worktree slug (`<owner>/<slug>`), so in the
+    # common case the branch column repeats what the identity token already says.
+    # When the branch's LAST path segment equals the worktree name, drop `⎇ <branch>`
+    # and keep the trailing status flags (✓ / ● / ↑N / ↓N / conflict / no-remote) —
+    # those are the only bits the git segment still contributes.
+    # When the tail DIFFERS the branch is real information (e.g. worktree
+    # `regla-de-negocio-mint` running `feature/disable-mint-condition`) and stays.
+    # Also drops the now-orphaned `·` separator that preceded the git segment, so
+    # the row reads `<project> ⑂ <worktree> · V<ver> ●` rather than `… · V<ver> · ●`.
+    if [ "$wt_is" = "1" ] && [ "${raw_branch##*/}" = "$wt_name" ]; then
+      line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch} ||")"
+      # The separator transform already ran, so the orphan is a literal `·` in DG
+      # followed by the triple-reset and the git segment's own SGR run. Strip ONLY
+      # the `·` and its two SGRs, keeping the color opener (and therefore the flag's
+      # green/amber/red) intact.
+      # Anchored on the FLAG that now follows (✓ ● ↑ ↓) rather than on an occurrence
+      # index: the row carries one separator when there is no package.json and two
+      # when V<ver> is spliced, so `s///2` would miss the no-version case. The other
+      # separator is always followed by `V`, never by a flag glyph — so this is
+      # unambiguous either way.
+      # Replacement drops the space too: the dir/V token already ends with powerline's
+      # own trailing pad, so re-emitting the git segment's leading pad would render a
+      # visible double space before the flag.
+      line1="$(printf '%s' "$line1" | sed "s|${esc}\[38;5;240m·${esc}\[0m${esc}\[49m${esc}\[49m${esc}\[49m\(\(${esc}\[[0-9;]*m\)*\) \([✓●↑↓]\)|\1\3|")"
+    elif [ "${#raw_branch}" -gt "$BRANCH_BUDGET" ]; then
+      # WT-04: tail-anchored truncation (see truncate_branch) — supersedes the
+      # LAYOUT-02 left-anchored truncate20 for branch names only. The dir basename
+      # (non-worktree path above) still uses truncate20 unchanged.
+      trunc_branch="$(truncate_branch "$raw_branch")"
+      # Use | as delimiter — branch names can contain slashes (feat/foo, fix/bar).
+      line1="$(printf '%s' "$line1" | sed "s|⎇ ${raw_branch}|⎇ ${trunc_branch}|")"
+    fi
   fi
 fi
 
@@ -736,6 +1110,36 @@ numcol="$(zone_color "$ctxpct")"
 ctxseg_full="${DG}·${R} ${ctxbar} ${numcol}${ctxpct}%${R}"
 ctxseg_standalone="${ctxbar} ${numcol}${ctxpct}%${R}"
 
+# ---- fleet segment (FL-02) — rendered on the 5h row, next to the shared quota ----
+# Placement is the point: the fleet count is the missing denominator for the number
+# immediately to its left. "47% used ↻ 4d 3h" answers *how much*; "5 sessions"
+# answers *by whom*. Splitting them onto separate rows would break that reading.
+#
+# ADAPTIVE: absent entirely at fleet_n ≤ 1, which is the normal single-session case
+# — the bar gains a segment only when there is genuinely something to disambiguate.
+# The `N active` half is likewise dropped at zero, so a fleet of idle tabs reads
+# "5 sessions" rather than the noisier "5 sessions · 0 active". That also makes the
+# degradation graceful when the transcript can't be resolved: no false "0 active",
+# just the honest count.
+#
+# Wording, not glyphs: the bar's stated contract is "no decoding required", and a
+# fleet symbol would need a legend. English matches every other literal in the bar
+# ("used", "Milestone:", "Last shipped:"). No new palette entry — LG text with the
+# same DG `·` separators the rest of the row already uses.
+fleetseg=""
+fleetseg_lead=""
+if [ "${fleet_n:-0}" -ge 2 ] 2>/dev/null; then
+  _fl="${LG}${fleet_n} sessions${R}"
+  if [ "${fleet_busy:-0}" -ge 1 ] 2>/dev/null; then
+    _fl="${_fl} ${DG}·${R} ${LG}${fleet_busy} active${R}"
+  fi
+  # Two forms, mirroring ctxseg: `_full` trails an existing segment (leading `·`),
+  # `_lead` opens the row when the block segment is absent (trailing `·`).
+  fleetseg=" ${DG}·${R} ${_fl}"
+  fleetseg_lead="${_fl} ${DG}·${R} "
+  unset _fl
+fi
+
 # ---- Context Management 4-line reflow emitter (v1.2) ----
 # Emits: title + 3 (or 4) indented content rows. Each row is prefixed with a reset
 # SGR + 3 literal spaces (Claude Code trims leading literal whitespace, but a space
@@ -770,10 +1174,13 @@ emit_context_block() {
   line_a="$(printf '%s' "$line1" | sed -nE "1{ $strip; p; }")"
   _row "$model_clean"
   _row "$line_a"
+  # Row 3 = [block%] [fleet] [memory gauge]. Both leading segments are optional, so
+  # the fleet token carries the separator appropriate to whichever slot it lands in
+  # (see FL-02): trailing an existing block segment, or opening the row without one.
   if [ -n "$blockseg" ]; then
-    _row "$blockseg $ctxseg_full"
+    _row "${blockseg}${fleetseg} $ctxseg_full"
   else
-    _row "$ctxseg_standalone"
+    _row "${fleetseg_lead}$ctxseg_standalone"
   fi
   [ -n "$weeklyseg" ] && _row "$weeklyseg"
 }

@@ -15,7 +15,13 @@ input="$(cat)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PL_CONFIG="$SCRIPT_DIR/../claude-powerline.json"
 
-session_id="$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)"
+# Normalized identically in statusline-gsd.sh (see the long note there): jq's `//`
+# does not fire on an EMPTY string, which collapsed every cache path to a shared
+# suffix-less filename. The sanitize keeps the id from steering a write out of /tmp.
+# Writer and reader address the same files by name, so this must not diverge.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+session_id="${session_id//[^A-Za-z0-9_-]/}"
+[ -z "$session_id" ] && session_id="default"
 [ -z "$session_id" ] && session_id="default"
 
 cache="/tmp/gsd-powerline-${session_id}"
